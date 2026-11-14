@@ -14,7 +14,8 @@ class Prefs(context: Context) {
     /** 0 = suit le téléphone, 1 = portrait, 2 = paysage */
     var orientationMode: Int get() = sp.getInt("orient", 0); set(v) = sp.edit().putInt("orient", v).apply()
 
-    // Audio
+    // Audio : "auto" = son de l'ordinateur s'il arrive par le Wi-Fi, sinon micro du téléphone ; "mic" = toujours le micro
+    var audioSource: String get() = if (sp.getString("audioSrc", "auto") == "mic") "mic" else "auto"; set(v) = sp.edit().putString("audioSrc", v).apply()
     var audioDeviceId: Int get() = sp.getInt("audioDev", -1); set(v) = sp.edit().putInt("audioDev", v).apply()
     var sampleRate: Int get() = sp.getInt("rate", 48000); set(v) = sp.edit().putInt("rate", v).apply()
     var stereo: Boolean get() = sp.getBoolean("stereo", true); set(v) = sp.edit().putBoolean("stereo", v).apply()
@@ -47,6 +48,7 @@ class Prefs(context: Context) {
     var chordWithSustain: Boolean get() = sp.getBoolean("chordSus", false); set(v) = sp.edit().putBoolean("chordSus", v).apply()
 
     // Réseau / divers
+    var lastComputer: String get() = sp.getString("lastPc", "") ?: ""; set(v) = sp.edit().putString("lastPc", v).apply()
     var networkMidi: Boolean get() = sp.getBoolean("netMidi", true); set(v) = sp.edit().putBoolean("netMidi", v).apply()
     var watermark: Boolean get() = sp.getBoolean("wm", true); set(v) = sp.edit().putBoolean("wm", v).apply()
     var saveToGallery: Boolean get() = sp.getBoolean("toGallery", true); set(v) = sp.edit().putBoolean("toGallery", v).apply()

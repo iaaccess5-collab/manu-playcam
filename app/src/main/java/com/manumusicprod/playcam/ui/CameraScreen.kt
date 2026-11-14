@@ -123,11 +123,15 @@ private fun CameraContent(go: (Screen) -> Unit, setOrientation: (Int) -> Unit, o
     val exposure by app.camera.exposure.collectAsState()
     val camError by app.camera.error.collectAsState()
     val rec by app.recorder.state.collectAsState()
-    val level by app.audio.level.collectAsState()
-    val sources by app.midi.sources.collectAsState()
+    val micLevel by app.audio.level.collectAsState()
+    val pcLevel by app.midi.audioLevel.collectAsState()
+    // son qui sera enregistré : celui de l'ordinateur s'il arrive (mode automatique), sinon le micro
+    val level = if (prefs.audioSource == "auto" && pcLevel.active) pcLevel else micLevel
+    val computer by app.midi.computer.collectAsState()
+    val linked by app.midi.wifi.linked.collectAsState()
     val lastMidi by app.midi.lastEventAt.collectAsState()
     val content by app.camera.content.collectAsState()
-    val midiOn = sources.any { it.connected }
+    val midiOn = computer != null || linked.isNotEmpty()
     val recording = rec is SessionRecorder.State.Recording
     val busy = recording || rec is SessionRecorder.State.Processing
 
@@ -212,13 +216,13 @@ private fun CameraContent(go: (Screen) -> Unit, setOrientation: (Int) -> Unit, o
                 app.camera.rebind()
             })
             Spacer(Modifier.width(8.dp))
-            Row(Modifier.clip(RoundedCornerShape(50)).clickable(enabled = !busy) { go(Screen.MIDI) }.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                StatusDot(midiOn && System.currentTimeMillis() - lastMidi < 30_000 || midiOn)
+            Row(Modifier.clip(RoundedCornerShape(50)).clickable(enabled = !busy) { go(Screen.COMPUTER) }.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                StatusDot(midiOn)
                 Spacer(Modifier.width(5.dp))
-                Text("MIDI", style = MaterialTheme.typography.labelMedium, color = if (midiOn) Mmp.Green else Mmp.Mute)
+                Text(if (midiOn) "Wi-Fi" else "Wi-Fi ?", style = MaterialTheme.typography.labelMedium, color = if (midiOn) Mmp.Green else Mmp.Mute)
             }
-            Box(Modifier.clickable(enabled = !busy) { go(Screen.AUDIO) }.padding(6.dp)) {
-                LevelMeter(level, Modifier.width(46.dp).height(8.dp))
+            Box(Modifier.clickable(enabled = !busy) { go(Screen.COMPUTER) }.padding(6.dp)) {
+                SignalLamp(level.signal, level.clipping)
             }
             Spacer(Modifier.weight(1f))
             IconButton(onClick = { kbVisible = !kbVisible; prefs.kbVisible = kbVisible; if (!kbVisible) editKb = false }) {
@@ -229,6 +233,24 @@ private fun CameraContent(go: (Screen) -> Unit, setOrientation: (Int) -> Unit, o
             IconButton(onClick = { if (!busy) go(Screen.SETTINGS) }, enabled = !busy) {
                 Icon(Icons.Filled.Settings, contentDescription = "Paramètres", tint = if (busy) Mmp.Mute else Mmp.Ivory)
             }
+        }
+
+        // ---------------- son qui entre
+        Column(
+            Modifier.align(Alignment.TopStart).padding(top = 60.dp, start = 10.dp).width(168.dp)
+                .clip(RoundedCornerShape(14.dp)).background(Mmp.Ebony.copy(alpha = 0.72f))
+                .border(1.dp, if (level.signal) Mmp.Green.copy(alpha = 0.5f) else Mmp.Ebony3, RoundedCornerShape(14.dp))
+                .clickable(enabled = !busy) { go(Screen.COMPUTER) }.padding(horizontal = 10.dp, vertical = 8.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SignalLamp(level.signal, level.clipping)
+                Spacer(Modifier.width(6.dp))
+                Text(when { level.clipping -> "SATURE"; level.signal -> "SON ENTRANT"; else -> "AUCUN SON" },
+                    style = MaterialTheme.typography.labelSmall, color = when { level.clipping -> Mmp.Red; level.signal -> Mmp.Green; else -> Mmp.Mute })
+            }
+            Text(if (level.fromComputer) "Ordinateur · Wi-Fi" else "Micro du téléphone", style = MaterialTheme.typography.bodySmall, color = Mmp.Soft)
+            Spacer(Modifier.height(4.dp))
+            SignalMeter(level, Modifier.fillMaxWidth(), compact = true)
         }
 
         // ---------------- chronomètre

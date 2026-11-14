@@ -33,7 +33,11 @@ import kotlin.math.tanh
 class AudioEngine(private val context: Context, private val prefs: Prefs) {
 
     data class Input(val id: Int, val label: String, val kind: String, val external: Boolean, val stereo: Boolean)
-    data class Level(val peakDb: Float = -90f, val rmsDb: Float = -90f, val clipping: Boolean = false, val active: Boolean = false)
+    /** Niveau d'un signal en dB (0 = pleine échelle). active = un flux audio arrive ; signal = du son y est présent. */
+    data class Level(
+        val peakDb: Float = -90f, val rmsDb: Float = -90f, val clipping: Boolean = false, val active: Boolean = false,
+        val leftDb: Float = peakDb, val rightDb: Float = peakDb, val fromComputer: Boolean = false,
+    ) { val signal: Boolean get() = active && peakDb > -60f }
 
     /** Résultat d'un enregistrement : instant (System.nanoTime) de la première trame du fichier. */
     data class Take(val file: File, val firstFrameNanos: Long, val sampleRate: Int, val channels: Int, val frames: Long,
@@ -97,12 +101,10 @@ class AudioEngine(private val context: Context, private val prefs: Prefs) {
     private fun isExternal(d: AudioDeviceInfo) = d.type == AudioDeviceInfo.TYPE_USB_DEVICE || d.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
             d.type == AudioDeviceInfo.TYPE_USB_ACCESSORY || d.type == AudioDeviceInfo.TYPE_WIRED_HEADSET
 
-    /** Périphérique à utiliser : choix de l'utilisateur, sinon interface USB si branchée, sinon micro. */
+    /** Le son vient de l'ordinateur (Wi-Fi) ; à défaut, du micro intégré du téléphone. */
     private fun chooseDevice(): AudioDeviceInfo? {
         val all = am.getDevices(AudioManager.GET_DEVICES_INPUTS)
-        all.firstOrNull { it.id == prefs.audioDeviceId }?.let { return it }
-        return all.firstOrNull { it.type == AudioDeviceInfo.TYPE_USB_DEVICE || it.type == AudioDeviceInfo.TYPE_USB_HEADSET }
-            ?: all.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+        return all.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
     }
 
     fun hasPermission() = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
@@ -180,7 +182,7 @@ class AudioEngine(private val context: Context, private val prefs: Prefs) {
         val buf = ByteArray(frameBytes * (rate / 100) * 2) // 20 ms
         val gain = 10f.pow(prefs.gainDb / 20f)
         var lastLevelAt = 0L
-        var peakAcc = 0f; var sumSq = 0.0; var n = 0; var clip = false
+        var peakAcc = 0f; var pl = 0f; var pr = 0f; var sumSq = 0.0; var n = 0; var clip = false; var idx = 0
         while (running) {
             val got = r.read(buf, 0, buf.size)
             if (got <= 0) {
@@ -200,6 +202,9 @@ class AudioEngine(private val context: Context, private val prefs: Prefs) {
                 if (s > 0.9999f) s = 0.9999f; if (s < -1f) s = -1f
                 val a = abs(s)
                 if (a > peakAcc) peakAcc = a
+                if (channels == 1 || idx % 2 == 0) { if (a > pl) pl = a }
+                if (channels == 1 || idx % 2 == 1) { if (a > pr) pr = a }
+                idx++
                 if (a >= 0.985f) clip = true
                 sumSq += (s * s).toDouble(); n++
                 val v = (s * 32767f).toInt()
@@ -219,8 +224,8 @@ class AudioEngine(private val context: Context, private val prefs: Prefs) {
             }
             if (now - lastLevelAt > 50_000_000L) {
                 val rms = if (n > 0) sqrt(sumSq / n).toFloat() else 0f
-                _level.value = Level(db(peakAcc), db(rms), clip, true)
-                lastLevelAt = now; peakAcc = 0f; sumSq = 0.0; n = 0; clip = false
+                _level.value = Level(db(peakAcc), db(rms), clip, true, db(pl), db(pr))
+                lastLevelAt = now; peakAcc = 0f; pl = 0f; pr = 0f; sumSq = 0.0; n = 0; clip = false; idx = 0
             }
         }
     }

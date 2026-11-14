@@ -56,6 +56,8 @@ class SessionRecorder(
     private var startEventNs = 0L
     private var statusCount = 0
     private var stamp = ""
+    private var useComputerAudio = false
+    private var startWarning: String? = null
 
     private val listener = MidiHub.RawListener { s, a, b, t ->
         if (capturing) synchronized(events) { events.add(longArrayOf(t, s.toLong(), a.toLong(), b.toLong())) }
@@ -68,12 +70,16 @@ class SessionRecorder(
         if (isBusy) return null
         val free = store.freeBytes()
         if (free in 1 until MIN_FREE_BYTES) return "Espace de stockage insuffisant (${free / 1_000_000} Mo libres). Libère de la place pour filmer."
-        if (!audio.hasPermission()) return "Autorise le micro pour enregistrer le son."
+        // son : celui de l'ordinateur (Wi-Fi) en priorité, sinon le micro du téléphone
+        useComputerAudio = prefs.audioSource == "auto" && midi.computerAudioActive()
+        startWarning = null
+        if (!useComputerAudio && !audio.hasPermission()) return "Autorise le micro pour enregistrer le son."
 
         stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.FRANCE).format(Date())
         val d = store.newDir(stamp)
         dir = d
-        audio.startRecording(File(d, "audio.wav"))?.let { d.deleteRecursively(); return it }
+        if (useComputerAudio) midi.startAudioRecording(File(d, "audio.wav"))
+        else audio.startRecording(File(d, "audio.wav"))?.let { d.deleteRecursively(); return it }
 
         synchronized(events) { events.clear() }
         videoStartEstimate = Long.MAX_VALUE; startEventNs = 0L; statusCount = 0
@@ -114,7 +120,7 @@ class SessionRecorder(
     private fun onFinalize(e: VideoRecordEvent.Finalize) {
         capturing = false
         midi.removeListener(listener)
-        val take = audio.stopRecording()
+        val take = stopAudio()
         val d = dir ?: return
         val raw = File(d, "video_raw.mp4")
         val durNs = e.recordingStats.recordedDurationNanos
@@ -130,6 +136,7 @@ class SessionRecorder(
 
     private fun process(d: File, raw: File, take: AudioEngine.Take?, videoStart: Long, durNs: Long, evs: List<LongArray>) {
         val warnings = ArrayList<String>()
+        startWarning?.let { warnings.add(it) }
         // ---- MIDI
         val w = MidiFileWriter()
         val on = BooleanArray(16 * 128)
@@ -173,7 +180,7 @@ class SessionRecorder(
             if (galleryUri == null) warnings.add("Copie dans la galerie impossible")
         }
 
-        val midiNames = midi.sources.value.filter { it.connected }.joinToString(", ") { it.name }
+        val midiNames = midi.linkedName() ?: ""
         store.writeMeta(d, mapOf(
             "createdAt" to System.currentTimeMillis(),
             "durationMs" to durNs / 1_000_000L,
@@ -191,10 +198,19 @@ class SessionRecorder(
         _state.value = State.Done(d.name, warnings.firstOrNull())
     }
 
+    private fun stopAudio(): AudioEngine.Take? {
+        if (!useComputerAudio) return audio.stopRecording()
+        val t = midi.stopAudioRecording() ?: return null
+        val gapMs = t.gapFrames * 1000 / maxOf(1, t.sampleRate)
+        return AudioEngine.Take(t.file, t.firstFrameNanos, t.sampleRate, t.channels, t.frames,
+            "Ordinateur (Wi-Fi) · ${midi.computer.value ?: "Manu Play Cam Connect"}", 0,
+            if (gapMs > 200) "Wi-Fi instable : $gapMs ms de son perdu ont été remplacés par du silence." else null)
+    }
+
     private fun cleanupFailed(msg: String) {
         capturing = false
         midi.removeListener(listener)
-        audio.stopRecording()
+        stopAudio()
         dir?.deleteRecursively()
         _state.value = State.Failed(msg)
     }

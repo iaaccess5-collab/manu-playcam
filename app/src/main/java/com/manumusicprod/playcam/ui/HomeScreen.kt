@@ -31,13 +31,12 @@ import com.manumusicprod.playcam.Screen
 @Composable
 fun HomeScreen(go: (Screen) -> Unit) {
     val app = PlayCamApp.instance
-    val sources by app.midi.sources.collectAsState()
-    val inputs by app.audio.inputs.collectAsState()
+    val computer by app.midi.computer.collectAsState()
+    val linked by app.midi.wifi.linked.collectAsState()
+    val level by app.midi.audioLevel.collectAsState()
     val sessions by app.store.sessions.collectAsState()
-    LaunchedEffect(Unit) { app.midi.refresh(); app.audio.refreshInputs(); app.store.reload() }
-    val connected = sources.filter { it.connected }
-    val audioLabel = inputs.firstOrNull { it.id == app.prefs.audioDeviceId }?.label
-        ?: inputs.firstOrNull { it.external }?.let { "Auto · ${it.label}" } ?: "Auto · Micro du téléphone"
+    LaunchedEffect(Unit) { app.store.reload() }
+    val linkName = computer ?: linked.firstOrNull()?.name
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 16.dp),
@@ -54,51 +53,52 @@ fun HomeScreen(go: (Screen) -> Unit) {
             append("MANU\n")
             withStyle(SpanStyle(color = Mmp.Green)) { append("PLAY CAM") }
         }, style = MaterialTheme.typography.displaySmall, color = Mmp.Ivory)
-        Text("Filme ton jeu. Le son de ton instrument, le MIDI, les notes et les accords sont enregistrés ensemble, au même tempo que l'image.",
+        Text("Relie ton ordinateur en Wi-Fi, filme ton jeu : les notes, les accords et le son de ton logiciel entrent dans la vidéo, au même tempo que l'image.",
             style = MaterialTheme.typography.bodyMedium, color = Mmp.Soft)
 
         // aperçu vivant du clavier
         MmpCard {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                StatusDot(connected.isNotEmpty())
+                StatusDot(linkName != null)
                 Spacer(Modifier.width(8.dp))
-                Text(if (connected.isEmpty()) "Aucun clavier MIDI connecté" else connected.joinToString(" · ") { it.name },
+                Text(if (linkName == null) "Aucun ordinateur connecté" else "Connecté à $linkName",
                     style = MaterialTheme.typography.titleSmall, color = Mmp.Ivory, modifier = Modifier.weight(1f))
             }
             Box(Modifier.fillMaxWidth().aspectRatio(3.2f)) { KeyboardPreview(Modifier.fillMaxSize()) }
-            if (connected.isEmpty()) Text("Branche un clavier MIDI en USB (adaptateur OTG) ou connecte-le en Bluetooth : les touches s'allumeront ici.",
+            if (linkName == null) Text("Ouvre Manu Play Cam Connect sur ton ordinateur, sur le même Wi-Fi : ce que tu joues s'allumera ici.",
                 style = MaterialTheme.typography.bodySmall, color = Mmp.Mute)
+            if (computer != null) SignalMeter(level, Modifier.fillMaxWidth())
         }
 
         PillButton("FILMER", onClick = { go(Screen.CAMERA) }, modifier = Modifier.fillMaxWidth())
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            MmpCard(Modifier.weight(1f), highlight = connected.isNotEmpty(), onClick = { go(Screen.MIDI) }) {
+            MmpCard(Modifier.weight(1f), highlight = linkName != null, onClick = { go(Screen.COMPUTER) }) {
                 GlyphIcon("midi", Mmp.Green)
-                Text("MIDI", style = MaterialTheme.typography.titleMedium, color = Mmp.Ivory)
-                Text(if (connected.isEmpty()) "USB, Bluetooth, ordinateur" else "${connected.size} source(s) active(s)", style = MaterialTheme.typography.bodySmall, color = Mmp.Mute)
+                Text("Ordinateur", style = MaterialTheme.typography.titleMedium, color = Mmp.Ivory)
+                Text(when {
+                    linkName == null -> "Connexion Wi-Fi"
+                    level.active -> "MIDI + son reçus"
+                    else -> "MIDI reçu"
+                }, style = MaterialTheme.typography.bodySmall, color = Mmp.Mute, maxLines = 2)
             }
-            MmpCard(Modifier.weight(1f), onClick = { go(Screen.AUDIO) }) {
-                GlyphIcon("mic", Mmp.Green)
-                Text("Audio", style = MaterialTheme.typography.titleMedium, color = Mmp.Ivory)
-                Text(audioLabel, style = MaterialTheme.typography.bodySmall, color = Mmp.Mute, maxLines = 2)
-            }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             MmpCard(Modifier.weight(1f), onClick = { go(Screen.KEYBOARD) }) {
                 GlyphIcon("keys", Mmp.Green)
                 Text("Clavier", style = MaterialTheme.typography.titleMedium, color = Mmp.Ivory)
                 Text("Apparence et accords", style = MaterialTheme.typography.bodySmall, color = Mmp.Mute)
             }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             MmpCard(Modifier.weight(1f), onClick = { go(Screen.GALLERY) }) {
                 GlyphIcon("grid", Mmp.Green)
                 Text("Galerie", style = MaterialTheme.typography.titleMedium, color = Mmp.Ivory)
                 Text("${sessions.size} enregistrement(s)", style = MaterialTheme.typography.bodySmall, color = Mmp.Mute)
             }
-        }
-        MmpCard(onClick = { go(Screen.SETTINGS) }) {
-            Text("Paramètres", style = MaterialTheme.typography.titleMedium, color = Mmp.Ivory)
-            Text("Qualité vidéo, images par seconde, synchronisation, notation des accords", style = MaterialTheme.typography.bodySmall, color = Mmp.Mute)
+            MmpCard(Modifier.weight(1f), onClick = { go(Screen.SETTINGS) }) {
+                GlyphIcon("sun", Mmp.Green)
+                Text("Paramètres", style = MaterialTheme.typography.titleMedium, color = Mmp.Ivory)
+                Text("Vidéo, synchronisation", style = MaterialTheme.typography.bodySmall, color = Mmp.Mute)
+            }
         }
         Spacer(Modifier.height(8.dp))
         Text("© MANU MUSIC PROD · Emmanuel NOUHOU", style = MaterialTheme.typography.bodySmall, color = Mmp.Mute, modifier = Modifier.align(Alignment.CenterHorizontally))

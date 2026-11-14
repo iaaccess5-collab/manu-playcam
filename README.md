@@ -4,41 +4,52 @@ Application Android pour pianistes, claviéristes et créateurs de contenu music
 et l'application enregistre **en même temps** la vidéo, le son de l'instrument et le MIDI. Le clavier virtuel
 et le nom des accords sont **incrustés dans la vidéo** pendant qu'on joue.
 
-## Ce que fait la version 1.0
+## Comment ça marche (version 1.1)
 
-| Fonction | Détail |
+L'application a une seule connexion : **le Wi-Fi vers ton ordinateur**.
+
+1. Sur l'ordinateur (Mac ou Windows), ouvre **Manu Play Cam Connect**. Il trouve le téléphone tout seul sur le Wi-Fi.
+2. Il envoie au téléphone **le MIDI** que tu joues (ton clavier relié à l'ordinateur, ou une piste envoyée vers le port
+   « Manu Play Cam ») et **le son** de ton logiciel (Logic, Cubase, Ableton, MainStage…).
+3. Dans l'application, tu filmes : le clavier virtuel s'allume, l'accord s'affiche, et le son du logiciel entre dans la vidéo.
+
+Si Connect n'envoie pas de son, la vidéo prend automatiquement **le son du micro du téléphone**, et le MIDI continue
+d'arriver par le Wi-Fi (par Connect, ou sans rien installer par la **session MIDI réseau** du Mac / rtpMIDI sous Windows).
+
+| Élément | Détail |
 |---|---|
-| Caméra | Avant / arrière, 4K ou 1080p ou 720p selon le téléphone, 30 ou 60 i/s si pris en charge (repli automatique sinon), mise au point par toucher, exposition, zoom, portrait / paysage / auto, aperçu en direct |
-| Audio | Micro du téléphone ou **interface audio USB** (choix explicite du périphérique), 44,1 / 48 kHz, stéréo si possible, gain numérique, limiteur anti-saturation, vumètre, source « sans traitement » quand le téléphone la propose |
-| MIDI | Claviers **USB** (branchement à chaud), **Bluetooth MIDI (BLE)** avec recherche, ordinateur par **câble USB** (mode « MIDI » d'Android) ou par **Wi-Fi** (compagnon fourni). Note On / Off, vélocité, canal, sustain (CC 64), Program Change, autres contrôleurs, pitch bend |
-| Accords | Reconnaissance à partir des notes MIDI : majeurs, mineurs, 6, 7, maj7, m7, m7♭5, dim7, sus2/4, 7sus4, add9, 9, maj9, m9, 11, 13, altérations (♭9, ♯9, ♯11, ♭13…), renversements (C/E) |
-| Clavier virtuel | 88 / 76 / 61 / 49 / 37 / 25 touches, noms des notes (C D E ou Do Ré Mi), vélocité, pédale, opacité, 6 couleurs, taille de l'accord, **déplacement et redimensionnement directement sur l'image** |
-| Fichiers | Par prise : `performance.mp4` (image + son de l'instrument + clavier incrusté), `audio.wav` (son d'origine), `performance.mid` (calé sur le début de la vidéo). Copie automatique dans Films › Manu Play Cam, export MIDI / WAV vers Téléchargements, partage |
-| Écrans | Accueil, Caméra, Connexion MIDI, Audio, Clavier virtuel, Paramètres, Galerie, Lecture |
+| Caméra | Avant / arrière, 4K / 1080p / 720p selon le téléphone, 30 ou 60 i/s si pris en charge, mise au point au toucher, exposition, zoom, portrait / paysage |
+| Son | Son de l'ordinateur par le Wi-Fi (48 kHz stéréo, sans compression), ou micro du téléphone. Vumètres stéréo à segments et voyant « SON ENTRANT » |
+| MIDI | Par le Wi-Fi uniquement : Manu Play Cam Connect, ou session MIDI réseau (RTP-MIDI, standard de macOS et de rtpMIDI) |
+| Accords | Reconnus depuis le MIDI : majeurs, mineurs, 6, 7, maj7, m7, m7♭5, dim7, sus, add9, 9, 11, 13, altérations, renversements |
+| Clavier virtuel | 25 à 88 touches, noms des notes, vélocité, pédale, couleurs, opacité, position et taille réglables sur l'image |
+| Fichiers | `performance.mp4` (image + son + clavier incrusté), `audio.wav`, `performance.mid` calé sur la vidéo |
 
-## Synchronisation (comment c'est fait)
+## Manu Play Cam Connect (ordinateur)
 
-Toutes les sources utilisent la même horloge du téléphone (`System.nanoTime`) :
-- **Vidéo** : l'instant de la première image est calculé à partir des événements d'enregistrement de CameraX
-  (instant de l'événement − durée déjà enregistrée, en gardant la meilleure valeur sur les premières secondes).
-- **Audio** : l'instant de la première trame est donné par l'horodatage matériel `AudioRecord.getTimestamp`.
-- **MIDI** : chaque message porte l'horodatage d'arrivée fourni par Android.
-- **Clavier incrusté** : dessiné dans les images au moment où elles sont captées (CameraX `OverlayEffect`), il ne peut donc pas être décalé par rapport à l'image.
+- **Mac** (macOS 13 ou plus récent) : `.dmg`. Le son du Mac est capté directement (autorisation « Enregistrement de l'écran
+  et audio système », demandée une fois), sans logiciel supplémentaire. Ton clavier relié au Mac est capté directement.
+  Première ouverture : l'application n'étant pas signée par Apple, fais clic droit › Ouvrir, ou Réglages Système ›
+  Confidentialité et sécurité › « Ouvrir quand même ».
+- **Windows** (10 / 11) : installateur `.exe`. Le son de l'ordinateur est capté directement (WASAPI loopback).
+  Un clavier déjà ouvert en exclusif par ton logiciel ne peut pas être lu en même temps : envoie alors la piste MIDI
+  vers un port virtuel (loopMIDI) ou utilise la session rtpMIDI.
 
-L'audio est ensuite placé dans le MP4 au bon décalage (encodage AAC, l'image n'est pas réencodée) et le
-fichier MIDI est écrit avec un minutage relatif à la première image. Chaque position est mesurée depuis le même
-point de départ : il n'y a pas de dérive qui s'accumule sur les longues prises. Comme chaque téléphone a sa
-propre latence, **Paramètres › Synchronisation** permet une correction fine (± 300 ms).
+Protocole (UDP, port 5010) : découverte `MMPD`/`MMPH`, présentation `MMPN`, MIDI `MMPM`, son `MMPS`
+(PCM 16 bits, blocs de 5 ms numérotés). Le téléphone recale chaque bloc sur sa propre horloge et comble les pertes par du silence.
 
-## Limites connues (dites clairement)
+## Synchronisation
 
-- **Son de l'ordinateur par le Wi-Fi** : pas dans la version 1.0. Pour enregistrer le son de Logic / Ableton / MainStage,
-  relie la sortie audio de l'ordinateur (ou de sa carte son) à une interface audio USB branchée sur le téléphone.
-  Le MIDI de l'ordinateur, lui, passe par le Wi-Fi (compagnon) ou par le câble USB.
-- **Accords à partir du micro seul** : pas de reconnaissance dans la version 1.0. L'application préfère n'afficher aucun
-  accord plutôt qu'un accord faux ; la reconnaissance est faite à partir du MIDI, qui est exact.
-- **4K à 60 i/s** : seulement sur les téléphones qui le proposent ; sinon l'application choisit la meilleure combinaison possible et l'indique.
-- **Interfaces USB** : elles doivent être « class compliant » (reconnues par Android sans pilote).
+Toutes les sources sont ramenées à l'horloge du téléphone : première image de la vidéo (événements CameraX), première
+trame du son (index des blocs reçus, ou horodatage matériel du micro), messages MIDI (instant de réception).
+Le clavier est dessiné dans les images au moment où elles sont captées. Paramètres › Synchronisation permet une
+correction fine (± 300 ms) propre à chaque téléphone et à chaque Wi-Fi.
+
+## Limites connues
+
+- Le Wi-Fi doit être un réseau domestique ou de studio ; un Wi-Fi « invité » isole souvent les appareils.
+- Sans MIDI, aucun accord n'est affiché (l'application ne devine pas d'accord à partir du son).
+- Le son par le Wi-Fi a quelques dizaines de millisecondes de retard, compensées automatiquement à l'assemblage.
 
 ## Compiler
 
@@ -58,17 +69,15 @@ Google Play Store, crée ta propre clé et remplace-la dans `app/build.gradle.kt
 2. Ouvre-le. Android demande d'autoriser l'installation depuis le navigateur ou le gestionnaire de fichiers : accepte.
 3. Lance **Manu Play Cam** et autorise la caméra et le micro.
 
-## Compagnon ordinateur (MIDI par le Wi-Fi)
-
-Dossier `companion/` : script Python pour Mac et Windows. Voir `companion/LISEZMOI.md`.
-
 ## Architecture
 
 ```
 app/src/main/java/com/manumusicprod/playcam/
   core/      ChordDetector, MidiParser, MidiFileWriter, WavWriter   (Java pur, testé : app/src/test)
-  midi/      MidiHub (USB, Bluetooth, USB périphérique), NetworkMidiServer (Wi-Fi), Performance (état des touches)
-  audio/     AudioEngine (choix du périphérique, gain, limiteur, vumètre, WAV horodaté)
+  core/      + ConnectReceiver (son et MIDI de Connect), AppleMidiSession (RTP-MIDI)
+  midi/      MidiHub (liaison Wi-Fi), WifiMidi (session MIDI réseau), Performance (état des touches)
+  audio/     AudioEngine (micro du téléphone : gain, limiteur, vumètre, WAV horodaté)
+companion/   Manu Play Cam Connect (Python : interface, son, MIDI, construction .dmg et .exe)
   camera/    CameraController (CameraX, OverlayEffect, qualité, i/s, zoom, mise au point, exposition)
   session/   SessionRecorder (synchronisation), AvMuxer (MP4 final), SessionStore (galerie, export, partage)
   ui/        Écrans Jetpack Compose et KeyboardRenderer (clavier virtuel)

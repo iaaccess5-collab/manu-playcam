@@ -1,5 +1,6 @@
 package com.manumusicprod.playcam.ui
 
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -242,5 +243,86 @@ fun InfoLine(label: String, value: String) {
     Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
         Text(label, style = MaterialTheme.typography.bodySmall, color = Mmp.Mute, modifier = Modifier.widthIn(min = 120.dp))
         Text(value, style = MaterialTheme.typography.bodySmall, color = Mmp.Ivory, modifier = Modifier.weight(1f))
+    }
+}
+
+/**
+ * Vumètre stéréo à segments (gauche / droite), façon console : vert, orange au-delà de −12 dB, rouge au-delà de −3 dB,
+ * maintien de crête, graduation et voyant « SON ENTRANT ».
+ */
+@Composable
+fun SignalMeter(level: AudioEngine.Level, modifier: Modifier = Modifier, compact: Boolean = false) {
+    // maintien de crête : valeur (dB) et instant (ms) pour chaque canal
+    val holdDb = androidx.compose.runtime.remember { floatArrayOf(-90f, -90f) }
+    val holdAt = androidx.compose.runtime.remember { longArrayOf(0L, 0L) }
+    val now = System.currentTimeMillis()
+    fun hold(i: Int, v: Float): Float {
+        if (v >= holdDb[i] || now - holdAt[i] > 1200) { holdDb[i] = v; holdAt[i] = now }
+        return holdDb[i]
+    }
+    val hl = hold(0, level.leftDb)
+    val hr = hold(1, level.rightDb)
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (!compact) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SignalLamp(level.signal, level.clipping)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    when { level.clipping -> "SATURATION"; level.signal -> "SON ENTRANT"; level.active -> "FLUX ACTIF · SILENCE"; else -> "AUCUN SON" },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = when { level.clipping -> Mmp.Red; level.signal -> Mmp.Green; else -> Mmp.Mute },
+                    modifier = Modifier.weight(1f),
+                )
+                Text(if (!level.active) "" else if (level.fromComputer) "ORDINATEUR · WI-FI" else "MICRO DU TÉLÉPHONE",
+                    style = MaterialTheme.typography.labelSmall, color = Mmp.Soft)
+            }
+        }
+        MeterBar("L", level.leftDb, hl, compact)
+        MeterBar("R", level.rightDb, hr, compact)
+        if (!compact) {
+            Row(Modifier.fillMaxWidth().padding(start = 18.dp)) {
+                listOf("-48", "-36", "-24", "-12", "-6", "-3", "0").forEachIndexed { i, t ->
+                    Text(t, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold, letterSpacing = androidx.compose.ui.unit.TextUnit.Unspecified),
+                        color = Mmp.Mute, modifier = Modifier.weight(if (i == 0) 0.6f else 1f))
+                }
+            }
+        }
+    }
+}
+
+private const val SEGMENTS = 30
+private fun segDb(i: Int): Float = -48f + 48f * (i + 1) / SEGMENTS
+
+@Composable
+private fun MeterBar(label: String, db: Float, holdDb: Float, compact: Boolean) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, style = MaterialTheme.typography.labelSmall, color = Mmp.Soft, modifier = Modifier.width(18.dp))
+        Canvas(Modifier.weight(1f).height(if (compact) 7.dp else 12.dp)) {
+            val gap = 2.dp.toPx()
+            val w = (size.width - gap * (SEGMENTS - 1)) / SEGMENTS
+            val r = CornerRadius(1.5.dp.toPx())
+            for (i in 0 until SEGMENTS) {
+                val th = segDb(i)
+                val base = when { th > -3f -> Mmp.Red; th > -12f -> Mmp.Amber; else -> Mmp.Green }
+                val lit = db >= th - 48f / SEGMENTS
+                val isHold = !lit && holdDb > -60f && kotlin.math.abs(holdDb - th) <= 48f / SEGMENTS
+                drawRoundRect(
+                    color = when { lit -> base; isHold -> base.copy(alpha = 0.75f); else -> base.copy(alpha = 0.13f) },
+                    topLeft = Offset(i * (w + gap), 0f), size = Size(w, size.height), cornerRadius = r,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun SignalLamp(on: Boolean, clipping: Boolean = false) {
+    val pulse = androidx.compose.animation.core.rememberInfiniteTransition(label = "lamp")
+    val a by pulse.animateFloat(0.35f, 1f, androidx.compose.animation.core.infiniteRepeatable(
+        androidx.compose.animation.core.tween(700), androidx.compose.animation.core.RepeatMode.Reverse), label = "lampAlpha")
+    val c = when { clipping -> Mmp.Red; on -> Mmp.Green; else -> Mmp.Mute.copy(alpha = 0.5f) }
+    Canvas(Modifier.size(12.dp)) {
+        if (on) drawCircle(c.copy(alpha = 0.25f * a), radius = size.minDimension / 2)
+        drawCircle(c.copy(alpha = if (on) a else 1f), radius = size.minDimension * 0.3f)
     }
 }

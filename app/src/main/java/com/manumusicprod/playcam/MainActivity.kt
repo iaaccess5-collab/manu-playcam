@@ -14,18 +14,17 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import com.manumusicprod.playcam.ui.AudioScreen
 import com.manumusicprod.playcam.ui.CameraScreen
 import com.manumusicprod.playcam.ui.GalleryScreen
 import com.manumusicprod.playcam.ui.HomeScreen
 import com.manumusicprod.playcam.ui.KeyboardScreen
-import com.manumusicprod.playcam.ui.MidiScreen
+import com.manumusicprod.playcam.ui.ComputerScreen
 import com.manumusicprod.playcam.ui.MmpTheme
 import com.manumusicprod.playcam.ui.Mmp
 import com.manumusicprod.playcam.ui.PlayerScreen
 import com.manumusicprod.playcam.ui.SettingsScreen
 
-enum class Screen { HOME, CAMERA, MIDI, AUDIO, KEYBOARD, SETTINGS, GALLERY, PLAYER }
+enum class Screen { HOME, CAMERA, COMPUTER, KEYBOARD, SETTINGS, GALLERY, PLAYER }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -60,7 +59,7 @@ fun AppRoot(setOrientation: (Int) -> Unit) {
         if (screen == Screen.CAMERA && recorder.isBusy) return@BackHandler
         screen = when (screen) {
             Screen.PLAYER -> Screen.GALLERY
-            Screen.MIDI, Screen.AUDIO, Screen.KEYBOARD, Screen.SETTINGS -> if (back == Screen.CAMERA) Screen.CAMERA else Screen.HOME
+            Screen.COMPUTER, Screen.KEYBOARD, Screen.SETTINGS -> if (back == Screen.CAMERA) Screen.CAMERA else Screen.HOME
             else -> Screen.HOME
         }
     }
@@ -69,8 +68,7 @@ fun AppRoot(setOrientation: (Int) -> Unit) {
         when (screen) {
             Screen.HOME -> HomeScreen(go)
             Screen.CAMERA -> CameraScreen(go, setOrientation) { id -> sessionId = id; screen = Screen.PLAYER }
-            Screen.MIDI -> MidiScreen { screen = if (back == Screen.CAMERA) Screen.CAMERA else Screen.HOME }
-            Screen.AUDIO -> AudioScreen { screen = if (back == Screen.CAMERA) Screen.CAMERA else Screen.HOME }
+            Screen.COMPUTER -> ComputerScreen { screen = if (back == Screen.CAMERA) Screen.CAMERA else Screen.HOME }
             Screen.KEYBOARD -> KeyboardScreen { screen = if (back == Screen.CAMERA) Screen.CAMERA else Screen.HOME }
             Screen.SETTINGS -> SettingsScreen(setOrientation) { screen = if (back == Screen.CAMERA) Screen.CAMERA else Screen.HOME }
             Screen.GALLERY -> GalleryScreen({ screen = Screen.HOME }) { id -> sessionId = id; screen = Screen.PLAYER }
