@@ -1,0 +1,74 @@
+name: Compiler l'APK Manu Play Cam
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Dépôt alimenté depuis le navigateur : si une archive source.zip est présente,
+      # on la décompresse dans le dépôt et on enregistre les fichiers (une seule fois).
+      - name: Importer source.zip (si présent)
+        run: |
+          if [ -f source.zip ]; then
+            unzip -o -q source.zip -d .
+            git rm -q --cached source.zip || true
+            rm -f source.zip
+            git config user.name "manu-playcam-bot"
+            git config user.email "actions@users.noreply.github.com"
+            git add -A
+            git commit -q -m "Import du code source Manu Play Cam" || echo "Rien à enregistrer"
+            git push || echo "Push impossible (sans importance pour la compilation)"
+          fi
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Tests du cœur musical (accords, MIDI, WAV)
+        run: |
+          mkdir -p /tmp/jt
+          javac -encoding UTF-8 -d /tmp/jt app/src/main/java/com/manumusicprod/playcam/core/*.java app/src/test/java/com/manumusicprod/playcam/core/CoreTest.java
+          java -cp /tmp/jt com.manumusicprod.playcam.core.CoreTest /tmp/jt/t.mid /tmp/jt/t.wav
+
+      - name: Compiler l'APK
+        run: gradle :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Vérifier l'APK
+        run: |
+          APK=app/build/outputs/apk/release/app-release.apk
+          ls -la "$APK"
+          BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
+          "$BT/apksigner" verify --print-certs "$APK"
+          "$BT/aapt" dump badging "$APK" | head -5
+          mkdir -p out
+          cp "$APK" "out/ManuPlayCam-v1.0.0-build${{ github.run_number }}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ManuPlayCam-apk
+          path: out/*.apk
+
+      - name: Publier le lien de téléchargement
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Manu Play Cam — build ${{ github.run_number }}
+          body: |
+            APK Android de Manu Play Cam (MANU MUSIC PROD), compilé automatiquement.
+            Télécharge le fichier .apk ci-dessous sur ton téléphone Android, puis ouvre-le pour l'installer.
+          files: out/*.apk
+          make_latest: true
