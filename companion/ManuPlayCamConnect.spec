@@ -21,8 +21,8 @@ if sys.platform == "darwin":
                  info_plist={
                      "CFBundleName": "Manu Play Cam Connect",
                      "CFBundleDisplayName": "Manu Play Cam Connect",
-                     "CFBundleShortVersionString": "1.0.1",
-                     "CFBundleVersion": "2",
+                     "CFBundleShortVersionString": "1.0.2",
+                     "CFBundleVersion": "3",
                      "LSMinimumSystemVersion": "13.0",
                      "NSHighResolutionCapable": True,
                      "NSMicrophoneUsageDescription": "Manu Play Cam Connect capte le son d'une entrée audio pour l'envoyer à ton téléphone.",

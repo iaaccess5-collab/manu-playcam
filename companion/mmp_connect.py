@@ -33,7 +33,7 @@ import threading
 import time
 
 APP = "Manu Play Cam Connect"
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 PORT = 5010
 RATE = 48000
 BLOCK = 240                     # 5 ms par paquet : < 1 000 octets, pas de fragmentation Wi-Fi
@@ -97,6 +97,34 @@ def setup_log():
 
 def log(*a):
     print(time.strftime("%H:%M:%S"), *a)
+
+
+def _state_file(name):
+    d = os.path.expanduser("~/Library/Application Support/" + APP) if IS_MAC else \
+        os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), APP)
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return os.path.join(d, name)
+
+
+def capture_lock_set(on):
+    try:
+        p = _state_file("capture.lock")
+        if on:
+            open(p, "w").write(str(time.time()))
+        elif os.path.exists(p):
+            os.remove(p)
+    except Exception:
+        pass
+
+
+def capture_lock_present():
+    try:
+        return os.path.exists(_state_file("capture.lock"))
+    except Exception:
+        return False
 
 
 def fatal_dialog(msg):
@@ -314,6 +342,7 @@ class MacSystemAudio:
         def got_content(content, error):
             try:
                 if error is not None or content is None or not content.displays():
+                    capture_lock_set(False)
                     on_error("Autorise « Enregistrement de l'écran et audio système » pour Manu Play Cam Connect "
                              "(Réglages Système › Confidentialité et sécurité), puis relance l'application.")
                     return
@@ -331,34 +360,43 @@ class MacSystemAudio:
                 res = stream.addStreamOutput_type_sampleHandlerQueue_error_(self.output, 1, None, None)
                 ok = res[0] if isinstance(res, tuple) else res
                 if not ok:
+                    capture_lock_set(False)
                     on_error("Le son du Mac n'a pas pu être capté.")
                     return
 
                 def started(err):
                     if err is not None:
                         log("son du Mac : refus", err)
+                        capture_lock_set(False)
                         on_error("Capture du son refusée par macOS : " + str(err.localizedDescription()))
                 stream.startCaptureWithCompletionHandler_(started)
                 holder["stream"] = stream
                 log("son du Mac : capture lancée")
+                threading.Timer(4.0, capture_lock_set, args=(False,)).start()
             except Exception as e:      # une exception ne doit jamais remonter dans macOS (plantage)
                 log("son du Mac : erreur", repr(e))
+                capture_lock_set(False)
                 on_error("Son du Mac indisponible : " + str(e))
             finally:
                 done.set()
 
         log("son du Mac : demande d'accès")
+        capture_lock_set(True)
         SCK.SCShareableContent.getShareableContentWithCompletionHandler_(got_content)
         done.wait(10)
         self.stream = holder.get("stream")
 
     def stop(self):
-        if self.stream is not None:
+        stream = self.stream
+        if stream is not None:
+            done = threading.Event()
             try:
-                self.stream.stopCaptureWithCompletionHandler_(lambda e: None)
-            except Exception:
-                pass
-        self.stream = None
+                stream.stopCaptureWithCompletionHandler_(lambda e: done.set())
+                done.wait(2.0)        # attendre que macOS ait vraiment arrêté la capture
+                log("son du Mac : capture arrêtée")
+            except Exception as e:
+                log("son du Mac : arrêt", repr(e))
+        self._keep = (stream, self.output)   # garder les objets vivants jusqu'à la sortie
 
 
 # ==================================================================== son : entrées (Windows loopback, interfaces, BlackHole)
@@ -758,7 +796,15 @@ def gui(screenshot=None, quit_after=None):
 
     tk.Label(root, text=f"© MANU MUSIC PROD · Emmanuel NOUHOU   ·   v{VERSION}", bg=EBONY, fg=MUTE, font=F(8)).pack(side="bottom", pady=10)
 
-    def start_audio(*_):
+    def start_audio(*args):
+        auto = not args
+        if auto and IS_MAC and capture_lock_present():
+            # la dernière ouverture s'est arrêtée pendant le lancement du son du Mac : on ne relance pas tout seul
+            capture_lock_set(False)
+            log("son : démarrage automatique annulé (arrêt inattendu la dernière fois)")
+            errors.put("Le son du Mac n'a pas démarré la dernière fois. Choisis « Son du Mac » dans la liste pour réessayer, "
+                       "après avoir autorisé l'enregistrement de l'écran et audio système.")
+            return
         if state["audio"]:
             state["audio"].stop()
         key = None
@@ -832,12 +878,30 @@ def gui(screenshot=None, quit_after=None):
         root.after(60, tick)
 
     def close():
-        if state["audio"]:
-            state["audio"].stop()
-        state["midi"].stop()
-        link.stop()
+        log("fermeture")
+        try:
+            link.stop()                 # plus rien n'est envoyé au téléphone
+            if state["audio"] and not IS_MAC:
+                state["audio"].stop()
+            state["midi"].stop()
+        except Exception as e:
+            log("fermeture :", repr(e))
+        if IS_MAC:
+            # Sur Mac, arrêter la capture ScreenCaptureKit pendant que Python se ferme peut planter :
+            # on quitte tout de suite, macOS libère la capture avec le processus.
+            log("fin")
+            try:
+                sys.stdout.flush()
+            except Exception:
+                pass
+            os._exit(0)
         root.destroy()
     root.protocol("WM_DELETE_WINDOW", close)
+    if IS_MAC:
+        try:
+            root.createcommand("::tk::mac::Quit", close)     # Cmd+Q passe aussi par la fermeture sûre
+        except Exception:
+            pass
     tick()
     log("fenêtre : prête")
     if quit_after:
@@ -857,6 +921,13 @@ def gui(screenshot=None, quit_after=None):
                 close()
         root.after(3500, snap)
     root.mainloop()
+    log("fin")
+    # sortie immédiate : évite que macOS reçoive encore du son pendant que Python se ferme (plantage à la sortie)
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    os._exit(0)
 
 
 if __name__ == "__main__":
