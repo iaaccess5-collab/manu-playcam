@@ -146,13 +146,27 @@ jobs:
           python-version: '3.12'
       - name: Dépendances
         working-directory: companion
-        run: pip install -r requirements-mac.txt
+        run: |
+          pip install -r requirements-mac.txt
+          # numpy publie aussi des versions réservées à macOS 14 : on prend celle qui marche dès macOS 10.13 / 11
+          if [ "$(uname -m)" = "arm64" ]; then PLAT=macosx_11_0_arm64; else PLAT=macosx_10_13_x86_64; fi
+          pip download numpy==2.1.3 --only-binary=:all: --no-deps --platform $PLAT --python-version 3.12 -d /tmp/np
+          pip install --force-reinstall --no-deps /tmp/np/numpy-*.whl
       - name: Autotest
         working-directory: companion
         run: python mmp_connect.py --selftest
       - name: Construire l'application
         working-directory: companion
         run: pyinstaller --noconfirm ManuPlayCamConnect.spec
+      - name: Vérifier que l'application s'ouvre dès macOS 13
+        working-directory: companion
+        run: |
+          bad=$(find "dist/Manu Play Cam Connect.app" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) | while read -r f; do
+            v=$(otool -l "$f" 2>/dev/null | awk '/minos/{print $2; exit}')
+            [ -n "$v" ] && [ "${v%%.*}" -gt 13 ] && echo "$v  $f"
+          done)
+          echo "${bad:-Tous les fichiers fonctionnent avec macOS 13}"
+          test -z "$bad"
       - name: Capture de la fenêtre (contrôle du design)
         working-directory: companion
         continue-on-error: true
@@ -161,13 +175,14 @@ jobs:
         working-directory: companion
         continue-on-error: true
         run: |
+          set +e
           sw_vers; uname -m
           rm -f "$HOME/Library/Logs/Manu Play Cam Connect.log"
-          perl -e 'alarm 60; exec @ARGV' "dist/Manu Play Cam Connect.app/Contents/MacOS/Manu Play Cam Connect" --smoketest 8; echo "code de sortie : $?"
+          perl -e 'alarm 60; exec @ARGV' "dist/Manu Play Cam Connect.app/Contents/MacOS/Manu Play Cam Connect" --smoketest 8; echo "code de sortie : $?" | tee -a "$HOME/Library/Logs/Manu Play Cam Connect.log"
           { sw_vers; uname -m; cat "$HOME/Library/Logs/Manu Play Cam Connect.log"; } > smoke-mac-${{ matrix.arch }}.txt 2>&1 || true
           ls -t "$HOME/Library/Logs/DiagnosticReports" 2>/dev/null | head -3 | while read f; do echo "== $f"; head -80 "$HOME/Library/Logs/DiagnosticReports/$f"; done >> smoke-mac-${{ matrix.arch }}.txt 2>&1 || true
           cat smoke-mac-${{ matrix.arch }}.txt
-          grep -q "ESSAI FENÊTRE OK" smoke-mac-${{ matrix.arch }}.txt
+          grep -q "ESSAI FENÊTRE OK" smoke-mac-${{ matrix.arch }}.txt && grep -q "code de sortie : 0" smoke-mac-${{ matrix.arch }}.txt
       - name: Créer le .dmg
         working-directory: companion
         run: |
