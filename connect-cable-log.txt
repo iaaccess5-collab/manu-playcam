@@ -1,0 +1,12 @@
+
+=== 2026-11-14 23:57:18 · Manu Play Cam Connect 1.1.2 · Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 · x86_64 · Python 3.12.16 · frozen=False
+Manu Play Cam Connect 1.1.2 — recherche du téléphone sur le Wi-Fi…
+23:57:18 câble : téléphone branché emulator-5554
+23:57:19 câble : connecté à Manu Play Cam (sdk_gphone64_x86_64)
+Connecté à Manu Play Cam (sdk_gphone64_x86_64) par câble
+Câble débranché
+23:57:27 câble : connecté à Manu Play Cam (sdk_gphone64_x86_64)
+Connecté à Manu Play Cam (sdk_gphone64_x86_64) par câble
+Câble débranché
+23:57:37 câble : connecté à Manu Play Cam (sdk_gphone64_x86_64)
+Connecté à Manu Play Cam (sdk_gphone64_x86_64) par câble

@@ -1,0 +1,21 @@
+== vidéo par câble : previews/sessions/20261114_235744/performance.mp4
+codec_name=h264
+codec_type=video
+codec_name=aac
+codec_type=audio
+sample_rate=48000
+channels=2
+duration=7.616000
+{
+  "createdAt": 1794700681330,
+  "durationMs": 7245,
+  "midiEvents": 76,
+  "audioDevice": "Ordinateur (câble) · ip-10-0-140-217",
+  "audioRate": 48000,
+  "audioChannels": 2,
+  "audioOffsetMs": -932,
+  "syncCorrectionMs": 0,
+  "midiDevices": "ip-10-0-140-217",
+  "galleryUri": "content:\/\/media\/external_primary\/video\/media\/1000000020",
+  "note": ""
+}

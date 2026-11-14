@@ -1,0 +1,20 @@
+ProductName:		macOS
+ProductVersion:		15.7.9
+BuildVersion:		24G830
+x86_64
+
+=== 2026-11-14 23:52:43 · Manu Play Cam Connect 1.1.2 · macOS-15.7.9-x86_64-i386-64bit · x86_64 · Python 3.12.10 · frozen=True
+23:52:43 Mac : mode temps réel actif (pas de mise en veille d'application)
+23:52:43 fenêtre : démarrage de Tk
+23:52:43 fenêtre : Tk 8.6.16
+23:52:44 MIDI : ['Manu Play Cam (port virtuel)']
+23:52:44 fenêtre : prête
+23:52:44 son : source Son du Mac (Logic, Cubase, Ableton…)
+23:52:44 son du Mac : demande d'accès
+23:52:44 son du Mac : capture lancée
+23:52:52 ESSAI FENÊTRE OK
+23:52:52 fermeture
+23:52:52 fin
+code de sortie : 0
+== Retired
+head: Error reading /Users/runner/Library/Logs/DiagnosticReports/Retired

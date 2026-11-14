@@ -1,0 +1,11 @@
+codec_name=h264
+codec_type=video
+width=720
+height=1280
+codec_name=aac
+codec_type=audio
+sample_rate=48000
+channels=2
+duration=8.106667
+MIDI 7.2453125 40
+MIDI 8.196354166666666 40

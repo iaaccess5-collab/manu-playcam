@@ -1,0 +1,15 @@
+/sdcard/Android/data/com.manumusicprod.playcam/files/sessions:
+20261114_235637
+20261114_235744
+
+/sdcard/Android/data/com.manumusicprod.playcam/files/sessions/20261114_235637:
+audio.wav
+performance.mid
+performance.mp4
+session.json
+
+/sdcard/Android/data/com.manumusicprod.playcam/files/sessions/20261114_235744:
+audio.wav
+performance.mid
+performance.mp4
+session.json
