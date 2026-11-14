@@ -205,11 +205,13 @@ jobs:
         working-directory: companion
         run: |
           find "dist/Manu Play Cam Connect.app" -path '*adb/adb' -exec sh -c 'echo "adb : $(otool -l "$1" | awk "/minos/{print \$2; exit}")"' _ {} \;
+          # Mac Intel : dès macOS 10.15 ; Mac Apple Silicon : tous (ils ont au moins macOS 11)
+          MIN=10.15; [ "$(uname -m)" = "arm64" ] && MIN=11.0
           bad=$(find "dist/Manu Play Cam Connect.app" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) ! -path '*adb/*' | while read -r f; do
             v=$(otool -l "$f" 2>/dev/null | awk '/minos/{print $2; exit}')
-            [ -n "$v" ] && [ "$(printf '%s\n10.15\n' "$v" | sort -V | tail -1)" != "10.15" ] && echo "$v  $f" || true
+            [ -n "$v" ] && [ "$(printf '%s\n%s\n' "$v" "$MIN" | sort -V | tail -1)" != "$MIN" ] && echo "$v  $f" || true
           done)
-          echo "${bad:-Tous les fichiers fonctionnent dès macOS 10.15}"
+          echo "${bad:-Tous les fichiers fonctionnent dès macOS $MIN}"
           test -z "$bad"
       - name: Capture de la fenêtre (contrôle du design)
         working-directory: companion
