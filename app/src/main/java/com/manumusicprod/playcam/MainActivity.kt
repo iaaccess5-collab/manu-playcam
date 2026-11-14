@@ -30,7 +30,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         applyOrientation(PlayCamApp.instance.prefs.orientationMode)
-        setContent { MmpTheme { AppRoot(::applyOrientation) } }
+        // Extras utilisés par les tests automatiques (écran de départ, enregistrement automatique)
+        val start = intent?.getStringExtra("mmp_screen")?.let { runCatching { Screen.valueOf(it) }.getOrNull() } ?: Screen.HOME
+        val autoRecord = intent?.getIntExtra("mmp_autorecord", 0) ?: 0
+        setContent { MmpTheme { AppRoot(::applyOrientation, start, autoRecord) } }
     }
 
     fun applyOrientation(mode: Int) {
@@ -48,8 +51,8 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun AppRoot(setOrientation: (Int) -> Unit) {
-    var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
+fun AppRoot(setOrientation: (Int) -> Unit, start: Screen = Screen.HOME, autoRecordSeconds: Int = 0) {
+    var screen by rememberSaveable { mutableStateOf(start) }
     var sessionId by rememberSaveable { mutableStateOf<String?>(null) }
     var back by rememberSaveable { mutableStateOf(Screen.HOME) }
     val go: (Screen) -> Unit = { s -> back = if (s == Screen.HOME) Screen.HOME else screen; screen = s }
@@ -67,7 +70,7 @@ fun AppRoot(setOrientation: (Int) -> Unit) {
     Surface(Modifier.fillMaxSize(), color = Mmp.Ebony) {
         when (screen) {
             Screen.HOME -> HomeScreen(go)
-            Screen.CAMERA -> CameraScreen(go, setOrientation) { id -> sessionId = id; screen = Screen.PLAYER }
+            Screen.CAMERA -> CameraScreen(go, setOrientation, autoRecordSeconds) { id -> sessionId = id; screen = Screen.PLAYER }
             Screen.COMPUTER -> ComputerScreen { screen = if (back == Screen.CAMERA) Screen.CAMERA else Screen.HOME }
             Screen.KEYBOARD -> KeyboardScreen { screen = if (back == Screen.CAMERA) Screen.CAMERA else Screen.HOME }
             Screen.SETTINGS -> SettingsScreen(setOrientation) { screen = if (back == Screen.CAMERA) Screen.CAMERA else Screen.HOME }

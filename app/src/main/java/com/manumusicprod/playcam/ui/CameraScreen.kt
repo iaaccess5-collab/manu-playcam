@@ -68,7 +68,7 @@ import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 @Composable
-fun CameraScreen(go: (Screen) -> Unit, setOrientation: (Int) -> Unit, openSession: (String) -> Unit) {
+fun CameraScreen(go: (Screen) -> Unit, setOrientation: (Int) -> Unit, autoRecordSeconds: Int = 0, openSession: (String) -> Unit) {
     val app = PlayCamApp.instance
     val ctx = LocalContext.current
     val perms = arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
@@ -89,11 +89,11 @@ fun CameraScreen(go: (Screen) -> Unit, setOrientation: (Int) -> Unit, openSessio
         }
         return
     }
-    CameraContent(go, setOrientation, openSession)
+    CameraContent(go, setOrientation, autoRecordSeconds, openSession)
 }
 
 @Composable
-private fun CameraContent(go: (Screen) -> Unit, setOrientation: (Int) -> Unit, openSession: (String) -> Unit) {
+private fun CameraContent(go: (Screen) -> Unit, setOrientation: (Int) -> Unit, autoRecordSeconds: Int, openSession: (String) -> Unit) {
     val app = PlayCamApp.instance
     val prefs = app.prefs
     val ctx = LocalContext.current
@@ -148,6 +148,13 @@ private fun CameraContent(go: (Screen) -> Unit, setOrientation: (Int) -> Unit, o
     LaunchedEffect(camError) { camError?.let { Toast.makeText(ctx, it, Toast.LENGTH_LONG).show(); app.camera.clearError() } }
     LaunchedEffect(recording) { while (recording) { now = System.currentTimeMillis(); delay(250) } }
     LaunchedEffect(focus) { if (focus != null) { delay(1200); focus = null } }
+    // enregistrement automatique (tests de la compilation)
+    LaunchedEffect(autoRecordSeconds) {
+        if (autoRecordSeconds > 0) {
+            delay(5000)
+            if (app.recorder.start(app.camera) == null) { delay(autoRecordSeconds * 1000L); app.recorder.stop() }
+        }
+    }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         BoxWithConstraints(Modifier.fillMaxSize()) {

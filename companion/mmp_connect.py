@@ -460,6 +460,9 @@ def console(args):
     link = Link()
     if args.phone:
         link.manual_ip = args.phone
+        if args.tone:
+            link.phone = (args.phone, "test")     # test : on envoie sans attendre la réponse du téléphone
+            link.last_reply = time.time() + 3600
     errors = queue.Queue()
     stop = threading.Event()
     print(f"{APP} {VERSION} — recherche du téléphone sur le Wi-Fi…")
