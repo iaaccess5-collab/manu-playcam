@@ -26,8 +26,8 @@ if sys.platform == "darwin":
                  info_plist={
                      "CFBundleName": "Manu Play Cam Connect",
                      "CFBundleDisplayName": "Manu Play Cam Connect",
-                     "CFBundleShortVersionString": "1.1.1",
-                     "CFBundleVersion": "5",
+                     "CFBundleShortVersionString": "1.1.2",
+                     "CFBundleVersion": "6",
                      "LSMinimumSystemVersion": "10.15",
                      "NSHighResolutionCapable": True,
                      "NSAppSleepDisabled": True,

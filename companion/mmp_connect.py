@@ -33,7 +33,7 @@ import threading
 import time
 
 APP = "Manu Play Cam Connect"
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 PORT = 5010
 USB_PORT = 5011                 # câble : port TCP relayé par « adb reverse »
 RATE = 48000
@@ -760,43 +760,79 @@ def make_audio(link, key, on_error):
 
 # ==================================================================== MIDI
 class MidiPump:
+    """Écoute tous les claviers MIDI de l'ordinateur, y compris ceux branchés APRÈS l'ouverture de Connect,
+    plus le port virtuel « Manu Play Cam ». Chaque note est envoyée au téléphone dès qu'elle arrive."""
+
     def __init__(self, link):
         self.link = link
         self.ports = []
         self.names = []
+        self.opened = {}               # nom du port -> MidiIn ouvert
+        self.virtual = None
         self.error = None
+        self.running = False
 
     def start(self):
         try:
-            import rtmidi
+            import rtmidi  # noqa: F401
         except ImportError:
             self.error = "Module MIDI absent"
             return
+        self.running = True
         try:
-            names = rtmidi.MidiIn().get_ports()
-            for i, n in enumerate(names):
-                if VIRTUAL_PORT.lower() in n.lower():
-                    continue
-                m = rtmidi.MidiIn()
-                try:
-                    m.open_port(i)
-                except Exception:
-                    continue           # port pris en exclusif par un autre logiciel (Windows)
-                m.ignore_types(sysex=True, timing=True, active_sense=True)
-                m.set_callback(self._cb)
-                self.ports.append(m)
-                self.names.append(n)
-            try:
-                v = rtmidi.MidiIn()
-                v.open_virtual_port(VIRTUAL_PORT)
-                v.ignore_types(sysex=True, timing=True, active_sense=True)
-                v.set_callback(self._cb)
-                self.ports.append(v)
-                self.names.append(VIRTUAL_PORT + " (port virtuel)")
-            except Exception:
-                pass                   # Windows : pas de port virtuel natif
+            import rtmidi
+            v = rtmidi.MidiIn()
+            v.open_virtual_port(VIRTUAL_PORT)
+            v.ignore_types(sysex=True, timing=True, active_sense=True)
+            v.set_callback(self._cb)
+            self.virtual = v
+        except Exception:
+            pass                       # Windows : pas de port virtuel natif
+        self._scan()
+        threading.Thread(target=self._watch, daemon=True).start()
+
+    def _scan(self):
+        import rtmidi
+        try:
+            if getattr(self, "_probe", None) is None:
+                self._probe = rtmidi.MidiIn()      # un seul client pour lister les ports (la liste se met à jour)
+            names = self._probe.get_ports()
         except Exception as e:
             self.error = str(e)
+            return
+        current = set()
+        for i, n in enumerate(names):
+            if VIRTUAL_PORT.lower() in n.lower():
+                continue
+            current.add(n)
+            if n in self.opened:
+                continue
+            m = rtmidi.MidiIn()
+            try:
+                m.open_port(i)
+            except Exception:
+                continue               # port pris en exclusif par un autre logiciel (Windows)
+            m.ignore_types(sysex=True, timing=True, active_sense=True)
+            m.set_callback(self._cb)
+            self.opened[n] = m
+            log("MIDI : clavier ouvert", n)
+        for n in list(self.opened):
+            if n not in current:       # clavier débranché
+                try:
+                    self.opened.pop(n).close_port()
+                except Exception:
+                    pass
+                log("MIDI : clavier débranché", n)
+        self.ports = list(self.opened.values()) + ([self.virtual] if self.virtual else [])
+        self.names = list(self.opened) + ([VIRTUAL_PORT + " (port virtuel)"] if self.virtual else [])
+
+    def _watch(self):
+        while self.running:
+            time.sleep(2)
+            try:
+                self._scan()
+            except Exception as e:
+                log("MIDI : recherche", repr(e))
 
     def _cb(self, event, _data=None):
         msg, _delta = event
@@ -804,12 +840,13 @@ class MidiPump:
             self.link.send_midi_bytes(msg)
 
     def stop(self):
+        self.running = False
         for p in self.ports:
             try:
                 p.close_port()
             except Exception:
                 pass
-        self.ports, self.names = [], []
+        self.ports, self.names, self.opened = [], [], {}
 
 
 def demo_chords(link, stop):
@@ -1103,14 +1140,7 @@ def gui(screenshot=None, quit_after=None):
     tk.Label(root, text=f"© MANU MUSIC PROD · Emmanuel NOUHOU   ·   v{VERSION}", bg=EBONY, fg=MUTE, font=F(8)).pack(side="bottom", pady=10)
 
     def start_audio(*args):
-        auto = not args
-        if auto and IS_MAC and capture_lock_present():
-            # la dernière ouverture s'est arrêtée pendant le lancement du son du Mac : on ne relance pas tout seul
-            capture_lock_set(False)
-            log("son : démarrage automatique annulé (arrêt inattendu la dernière fois)")
-            errors.put("Le son du Mac n'a pas démarré la dernière fois. Choisis « Son du Mac » dans la liste pour réessayer, "
-                       "après avoir autorisé l'enregistrement de l'écran et audio système.")
-            return
+        capture_lock_set(False)
         if state["audio"]:
             state["audio"].stop()
         key = None
