@@ -20,7 +20,9 @@ Options (tests) :
   --selftest          vérifie que les modules sont présents (utilisé par la compilation automatique)
 """
 import argparse
+import faulthandler
 import math
+import os
 import platform
 import queue
 import random
@@ -31,7 +33,7 @@ import threading
 import time
 
 APP = "Manu Play Cam Connect"
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 PORT = 5010
 RATE = 48000
 BLOCK = 240                     # 5 ms par paquet : < 1 000 octets, pas de fragmentation Wi-Fi
@@ -42,6 +44,74 @@ IS_WIN = sys.platform.startswith("win")
 EBONY, EBONY2, EBONY3 = "#0E0F0D", "#171916", "#262A22"
 IVORY, SOFT, MUTE = "#F3EFE4", "#CFCBC0", "#A39E90"
 GREEN, GREEN_DEEP, RED, AMBER = "#59C35F", "#0A7034", "#E5484D", "#E9B44C"
+
+
+# ==================================================================== journal (diagnostic en cas de problème)
+LOG_PATH = None
+
+
+class _Tee:
+    def __init__(self, *files):
+        self.files = [f for f in files if f is not None]
+
+    def write(self, d):
+        for f in self.files:
+            try:
+                f.write(d)
+                f.flush()
+            except Exception:
+                pass
+        return len(d)
+
+    def flush(self):
+        pass
+
+
+def setup_log():
+    """Journal : Mac ~/Library/Logs/Manu Play Cam Connect.log · Windows %LOCALAPPDATA%\\Manu Play Cam Connect.log"""
+    global LOG_PATH
+    try:
+        if IS_MAC:
+            d = os.path.expanduser("~/Library/Logs")
+        elif IS_WIN:
+            d = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        else:
+            d = os.path.expanduser("~")
+        os.makedirs(d, exist_ok=True)
+        LOG_PATH = os.path.join(d, APP + ".log")
+        f = open(LOG_PATH, "a", buffering=1, encoding="utf-8")
+        faulthandler.enable(f)          # trace même en cas de plantage natif
+        sys.stdout = _Tee(sys.__stdout__, f)
+        sys.stderr = _Tee(sys.__stderr__, f)
+        print(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} · {APP} {VERSION} · {platform.platform()} · "
+              f"{platform.machine()} · Python {platform.python_version()} · frozen={getattr(sys, 'frozen', False)}")
+
+        def hook(t, v, tb):
+            import traceback
+            print("ERREUR :", "".join(traceback.format_exception(t, v, tb)))
+        sys.excepthook = hook
+        threading.excepthook = lambda a: hook(a.exc_type, a.exc_value, a.exc_traceback)
+    except Exception:
+        pass
+
+
+def log(*a):
+    print(time.strftime("%H:%M:%S"), *a)
+
+
+def fatal_dialog(msg):
+    """Affiche l'erreur même si la fenêtre n'a pas pu s'ouvrir."""
+    txt = f"{APP} n'a pas pu démarrer.\n\n{msg}\n\nJournal : {LOG_PATH}"
+    try:
+        if IS_MAC:
+            import subprocess
+            esc = txt.replace("\\", "\\\\").replace('"', '\\"')
+            subprocess.run(["osascript", "-e", f'display alert "{APP}" message "{esc}" as critical'], timeout=120)
+        elif IS_WIN:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0, txt, APP, 0x10)
+    except Exception:
+        pass
 
 
 def computer_name():
@@ -266,12 +336,18 @@ class MacSystemAudio:
 
                 def started(err):
                     if err is not None:
+                        log("son du Mac : refus", err)
                         on_error("Capture du son refusée par macOS : " + str(err.localizedDescription()))
                 stream.startCaptureWithCompletionHandler_(started)
                 holder["stream"] = stream
+                log("son du Mac : capture lancée")
+            except Exception as e:      # une exception ne doit jamais remonter dans macOS (plantage)
+                log("son du Mac : erreur", repr(e))
+                on_error("Son du Mac indisponible : " + str(e))
             finally:
                 done.set()
 
+        log("son du Mac : demande d'accès")
         SCK.SCShareableContent.getShareableContentWithCompletionHandler_(got_content)
         done.wait(10)
         self.stream = holder.get("stream")
@@ -522,11 +598,13 @@ def selftest():
 
 
 # ==================================================================== fenêtre (branding MANU MUSIC PROD)
-def gui(screenshot=None):
+def gui(screenshot=None, quit_after=None):
     import tkinter as tk
     from tkinter import ttk
 
+    log("fenêtre : démarrage de Tk")
     root = tk.Tk()
+    log("fenêtre : Tk", root.tk.call("info", "patchlevel"))
     root.title(APP)
     root.configure(bg=EBONY)
     root.geometry("500x690")
@@ -547,6 +625,12 @@ def gui(screenshot=None):
         pass
     style.configure("MMP.TCombobox", fieldbackground=EBONY2, background=EBONY3, foreground=IVORY, arrowcolor=GREEN,
                     bordercolor=EBONY3, lightcolor=EBONY3, darkcolor=EBONY3, selectbackground=EBONY2, selectforeground=IVORY)
+    style.map("MMP.TCombobox",
+              fieldbackground=[("readonly", EBONY2), ("disabled", EBONY2)],
+              foreground=[("readonly", IVORY), ("disabled", MUTE)],
+              background=[("active", EBONY3), ("readonly", EBONY3)],
+              selectbackground=[("readonly", EBONY2)], selectforeground=[("readonly", IVORY)],
+              arrowcolor=[("readonly", GREEN)])
     root.option_add("*TCombobox*Listbox.background", EBONY2)
     root.option_add("*TCombobox*Listbox.foreground", IVORY)
     root.option_add("*TCombobox*Listbox.selectBackground", GREEN_DEEP)
@@ -680,12 +764,35 @@ def gui(screenshot=None):
         key = None
         if choice.get() in [x[0] for x in sources]:
             key = sources[[x[0] for x in sources].index(choice.get())][1]
-        state["audio"] = make_audio(link, key, errors.put)
-        if state["audio"]:
-            state["audio"].start()
+        try:
+            state["audio"] = make_audio(link, key, errors.put)
+            if state["audio"]:
+                log("son : source", choice.get())
+                # démarrage hors du fil de la fenêtre : la fenêtre reste fluide pendant que macOS répond
+                threading.Thread(target=_safe_start, args=(state["audio"],), daemon=True).start()
+        except Exception as e:
+            log("son : erreur", repr(e))
+            errors.put("Son : " + str(e))
+
+    def _safe_start(audio):
+        try:
+            audio.start()
+        except Exception as e:
+            log("son : erreur au démarrage", repr(e))
+            errors.put("Son : " + str(e))
     combo.bind("<<ComboboxSelected>>", start_audio)
     root.after(300, start_audio)
-    state["midi"].start()
+    try:
+        state["midi"].start()
+        log("MIDI :", state["midi"].names or state["midi"].error or "aucun port")
+    except Exception as e:
+        log("MIDI : erreur", repr(e))
+
+    def report(exc, val, tb):
+        import traceback
+        log("ERREUR fenêtre :", "".join(traceback.format_exception(exc, val, tb)))
+        errors.put(str(val))
+    root.report_callback_exception = report
 
     last_err = {"t": 0.0, "msg": ""}
 
@@ -732,6 +839,12 @@ def gui(screenshot=None):
         root.destroy()
     root.protocol("WM_DELETE_WINDOW", close)
     tick()
+    log("fenêtre : prête")
+    if quit_after:
+        def bye():
+            log("ESSAI FENÊTRE OK")
+            close()
+        root.after(int(quit_after * 1000), bye)
     if screenshot:
         # capture de la fenêtre (vérification visuelle lors de la compilation automatique)
         def snap():
@@ -754,10 +867,18 @@ if __name__ == "__main__":
     ap.add_argument("--seconds", type=float, default=0, help="durée (tests)")
     ap.add_argument("--selftest", action="store_true", help="vérifie les modules et quitte")
     ap.add_argument("--screenshot", help="enregistre une capture de la fenêtre puis quitte")
-    a = ap.parse_args()
+    ap.add_argument("--smoketest", type=float, default=0, help="ouvre la fenêtre N secondes puis quitte")
+    a, _unknown = ap.parse_known_args()   # macOS peut ajouter ses propres arguments au lancement
+    setup_log()
     if a.selftest:
         selftest()
     elif a.console:
         console(a)
     else:
-        gui(a.screenshot)
+        try:
+            gui(a.screenshot, a.smoketest or None)
+        except Exception as e:
+            import traceback
+            log("ERREUR au démarrage :", traceback.format_exc())
+            fatal_dialog(f"{type(e).__name__} : {e}")
+            sys.exit(1)

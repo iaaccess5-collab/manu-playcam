@@ -1,6 +1,6 @@
 ; Installateur Windows de Manu Play Cam Connect (Inno Setup 6)
 #define AppName "Manu Play Cam Connect"
-#define AppVersion "1.0.0"
+#define AppVersion "1.0.1"
 [Setup]
 AppId={{6B7C1E2A-4D1B-4F7E-9C2E-7A1B2C3D4E5F}
 AppName={#AppName}
