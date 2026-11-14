@@ -26,10 +26,11 @@ if sys.platform == "darwin":
                  info_plist={
                      "CFBundleName": "Manu Play Cam Connect",
                      "CFBundleDisplayName": "Manu Play Cam Connect",
-                     "CFBundleShortVersionString": "1.1.0",
-                     "CFBundleVersion": "4",
+                     "CFBundleShortVersionString": "1.1.1",
+                     "CFBundleVersion": "5",
                      "LSMinimumSystemVersion": "10.15",
                      "NSHighResolutionCapable": True,
+                     "NSAppSleepDisabled": True,
                      "NSMicrophoneUsageDescription": "Manu Play Cam Connect capte le son d'une entrée audio pour l'envoyer à ton téléphone.",
                      "NSLocalNetworkUsageDescription": "Manu Play Cam Connect envoie le son et le MIDI à ton téléphone sur le Wi-Fi.",
                      "NSScreenCaptureUsageDescription": "Manu Play Cam Connect capte le son du Mac (Logic, Cubase…) pour l'envoyer à ton téléphone. Aucune image n'est enregistrée.",

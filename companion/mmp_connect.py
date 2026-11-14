@@ -33,7 +33,7 @@ import threading
 import time
 
 APP = "Manu Play Cam Connect"
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 PORT = 5010
 USB_PORT = 5011                 # câble : port TCP relayé par « adb reverse »
 RATE = 48000
@@ -170,6 +170,11 @@ class Link:
     def __init__(self, usb=True):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        try:
+            # priorité « voix » sur le Wi-Fi (WMM) : les routeurs font passer ces paquets avant les autres
+            self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_TOS, 0xB8)
+        except (OSError, AttributeError):
+            pass
         self.sock.bind(("0.0.0.0", 0))
         self.sock.settimeout(0.3)
         self.phone = None            # (ip ou "usb", nom)
@@ -822,6 +827,7 @@ def demo_chords(link, stop):
 
 # ==================================================================== mode texte
 def console(args):
+    keep_awake()
     link = Link(usb=not args.no_usb)
     if args.phone:
         link.manual_ip = args.phone
@@ -887,9 +893,30 @@ def selftest():
 
 
 # ==================================================================== fenêtre (branding MANU MUSIC PROD)
+_ACTIVITY = None
+
+
+def keep_awake():
+    """Mac : empêche macOS de ralentir Connect quand sa fenêtre est derrière Logic (App Nap),
+    sinon le MIDI et le son arrivent en retard sur le téléphone."""
+    global _ACTIVITY
+    if not IS_MAC:
+        return
+    try:
+        from Foundation import NSProcessInfo
+        user_initiated, latency_critical = 0x00FFFFFF, 0xFF00000000
+        _ACTIVITY = NSProcessInfo.processInfo().beginActivityWithOptions_reason_(
+            user_initiated | latency_critical, "Manu Play Cam : MIDI et son en temps réel")
+        log("Mac : mode temps réel actif (pas de mise en veille d'application)")
+    except Exception as e:
+        log("Mac : mode temps réel indisponible", repr(e))
+
+
 def gui(screenshot=None, quit_after=None):
     import tkinter as tk
     from tkinter import ttk
+
+    keep_awake()
 
     log("fenêtre : démarrage de Tk")
     root = tk.Tk()

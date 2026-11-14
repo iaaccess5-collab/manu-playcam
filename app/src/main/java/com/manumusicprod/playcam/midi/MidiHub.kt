@@ -81,6 +81,10 @@ class MidiHub(private val context: Context, private val prefs: Prefs, val perfor
         runCatching {
             val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
             wm.createMulticastLock("mmp-connect").apply { setReferenceCounted(false); acquire() }
+            // Wi-Fi sans économie d'énergie : sinon le téléphone regroupe les paquets reçus (jusqu'à 300 ms de retard)
+            val mode = if (Build.VERSION.SDK_INT >= 29) android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                       else android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            wm.createWifiLock(mode, "mmp-realtime").apply { setReferenceCounted(false); acquire() }
         }
         try { connect.start() } catch (e: Exception) { note("La liaison avec l'ordinateur n'a pas pu démarrer : ${e.message}") }
         watcher.start()
