@@ -128,10 +128,10 @@ private fun CameraContent(go: (Screen) -> Unit, setOrientation: (Int) -> Unit, a
     // son qui sera enregistré : celui de l'ordinateur s'il arrive (mode automatique), sinon le micro
     val level = if (prefs.audioSource == "auto" && pcLevel.active) pcLevel else micLevel
     val computer by app.midi.computer.collectAsState()
-    val linked by app.midi.wifi.linked.collectAsState()
+    val usb by app.midi.usb.collectAsState()
     val lastMidi by app.midi.lastEventAt.collectAsState()
     val content by app.camera.content.collectAsState()
-    val midiOn = computer != null || linked.isNotEmpty()
+    val midiOn = computer != null
     val recording = rec is SessionRecorder.State.Recording
     val busy = recording || rec is SessionRecorder.State.Processing
 
@@ -226,7 +226,7 @@ private fun CameraContent(go: (Screen) -> Unit, setOrientation: (Int) -> Unit, a
             Row(Modifier.clip(RoundedCornerShape(50)).clickable(enabled = !busy) { go(Screen.COMPUTER) }.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 StatusDot(midiOn)
                 Spacer(Modifier.width(5.dp))
-                Text(if (midiOn) "Wi-Fi" else "Wi-Fi ?", style = MaterialTheme.typography.labelMedium, color = if (midiOn) Mmp.Green else Mmp.Mute)
+                Text(if (!midiOn) "Ordinateur ?" else if (usb) "Câble" else "Wi-Fi", style = MaterialTheme.typography.labelMedium, color = if (midiOn) Mmp.Green else Mmp.Mute)
             }
             Box(Modifier.clickable(enabled = !busy) { go(Screen.COMPUTER) }.padding(6.dp)) {
                 SignalLamp(level.signal, level.clipping)
@@ -255,7 +255,7 @@ private fun CameraContent(go: (Screen) -> Unit, setOrientation: (Int) -> Unit, a
                 Text(when { level.clipping -> "SATURE"; level.signal -> "SON ENTRANT"; else -> "AUCUN SON" },
                     style = MaterialTheme.typography.labelSmall, color = when { level.clipping -> Mmp.Red; level.signal -> Mmp.Green; else -> Mmp.Mute })
             }
-            Text(if (level.fromComputer) "Ordinateur · Wi-Fi" else "Micro du téléphone", style = MaterialTheme.typography.bodySmall, color = Mmp.Soft)
+            Text(if (level.fromComputer) (if (usb) "Ordinateur · câble" else "Ordinateur · Wi-Fi") else "Micro du téléphone", style = MaterialTheme.typography.bodySmall, color = Mmp.Soft)
             Spacer(Modifier.height(4.dp))
             SignalMeter(level, Modifier.fillMaxWidth(), compact = true)
         }

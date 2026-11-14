@@ -273,7 +273,7 @@ fun SignalMeter(level: AudioEngine.Level, modifier: Modifier = Modifier, compact
                     color = when { level.clipping -> Mmp.Red; level.signal -> Mmp.Green; else -> Mmp.Mute },
                     modifier = Modifier.weight(1f),
                 )
-                Text(if (!level.active) "" else if (level.fromComputer) "ORDINATEUR · WI-FI" else "MICRO DU TÉLÉPHONE",
+                Text(if (!level.active) "" else if (level.fromComputer) (if (com.manumusicprod.playcam.PlayCamApp.instance.midi.usb.value) "ORDINATEUR · CÂBLE" else "ORDINATEUR · WI-FI") else "MICRO DU TÉLÉPHONE",
                     style = MaterialTheme.typography.labelSmall, color = Mmp.Soft)
             }
         }

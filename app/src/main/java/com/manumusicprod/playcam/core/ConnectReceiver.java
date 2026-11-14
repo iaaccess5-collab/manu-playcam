@@ -1,12 +1,18 @@
 package com.manumusicprod.playcam.core;
 
+import java.io.DataInputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Réception de « Manu Play Cam Connect » (logiciel de l'ordinateur) par le Wi-Fi :
@@ -14,9 +20,15 @@ import java.nio.charset.StandardCharsets;
  *
  * Paquets (tous commencent par « MMP » + une lettre) :
  *   MMPD                         découverte : le téléphone répond « MMPH » + son nom
- *   MMPN + nom                   l'ordinateur se présente (envoyé chaque seconde, sert aussi de signal de vie)
+ *   MMPA + nom                   l'ordinateur s'annonce sur le Wi-Fi (liste des ordinateurs, choix par le nom)
+ *   MMPC + nom                   choix : le téléphone choisit l'ordinateur, ou l'inverse ; MMPX (dans les deux sens) = déconnexion
+ *   MMPN + nom                   l'ordinateur relié se présente (chaque seconde, sert aussi de signal de vie)
  *   MMPM + octets MIDI           message(s) MIDI
  *   MMPS + session(4) + trame(8) + fréquence(4) + canaux(1) + 3 octets réservés + PCM 16 bits little-endian
+ *
+ * Câble USB : l'ordinateur ouvre (par adb reverse) le port TCP 5011 du téléphone vers le sien. Le téléphone s'y
+ * connecte sur 127.0.0.1:5011 et reçoit les mêmes paquets, chacun précédé de sa longueur (2 octets, big-endian).
+ * Quand le câble est branché, il est prioritaire sur le Wi-Fi.
  *
  * Minutage : chaque bloc audio porte l'index de sa première trame côté ordinateur. L'instant de la trame 0
  * est estimé par le minimum de (arrivée − index / fréquence) : c'est le paquet arrivé le plus vite qui fixe
@@ -26,12 +38,19 @@ import java.nio.charset.StandardCharsets;
 public final class ConnectReceiver {
 
     public static final int PORT = 5010;
+    public static final int USB_PORT = 5011;
 
     public interface Listener {
         void onMidi(byte[] data, int offset, int length, long arrivalNanos);
         void onSender(String name, String host);
         /** Crêtes gauche / droite et niveau moyen (0..1), environ 20 fois par seconde. */
         void onLevel(float peakL, float peakR, float rms);
+    }
+
+    /** Ordinateur vu sur le Wi-Fi (il ouvre Manu Play Cam Connect). */
+    public static final class Computer {
+        public final String name, host; final int port; final long seenMs;
+        Computer(String n, String h, int p, long t) { name = n; host = h; port = p; seenMs = t; }
     }
 
     public static final class Take {
@@ -43,6 +62,12 @@ public final class ConnectReceiver {
     private final Listener listener;
     private DatagramSocket socket;
     private volatile boolean running;
+    private volatile Socket usb;
+    private final ConcurrentHashMap<String, Computer> seen = new ConcurrentHashMap<>();
+    private volatile String chosenHost = null;          // ordinateur relié par le Wi-Fi
+    private volatile String blockedHost = null;         // déconnecté à la main : ignoré quelques secondes
+    private volatile long blockedUntil = 0;
+    private volatile long lastUsbMs = 0;
 
     private volatile String senderName = null;
     private volatile String senderHost = null;
@@ -71,9 +96,52 @@ public final class ConnectReceiver {
         socket = s; running = true;
         Thread t = new Thread(this::loop, "connect-receiver");
         t.setPriority(Thread.MAX_PRIORITY); t.setDaemon(true); t.start();
+        Thread u = new Thread(this::usbLoop, "connect-usb");
+        u.setPriority(Thread.MAX_PRIORITY); u.setDaemon(true); u.start();
     }
 
-    public synchronized void stop() { running = false; if (socket != null) socket.close(); socket = null; }
+    public synchronized void stop() {
+        running = false;
+        if (socket != null) socket.close();
+        socket = null;
+        Socket c = usb; usb = null;
+        if (c != null) try { c.close(); } catch (IOException ignored) {}
+    }
+
+    /** Ordinateurs vus sur le Wi-Fi depuis moins de 5 s, triés par nom. */
+    public List<Computer> computers() {
+        long now = System.currentTimeMillis();
+        List<Computer> out = new ArrayList<>();
+        for (Computer c : seen.values()) if (now - c.seenMs < 5000) out.add(c);
+        out.sort((a, b) -> a.name.compareToIgnoreCase(b.name));
+        return out;
+    }
+
+    /** Relie le téléphone à cet ordinateur (choisi par son nom dans la liste). */
+    public void connectTo(Computer c) {
+        blockedHost = null;
+        chosenHost = c.host;
+        try { reply(InetAddress.getByName(c.host), c.port, "MMPC" + phoneName); } catch (IOException ignored) {}
+    }
+
+    /** Déconnecte l'ordinateur relié par le Wi-Fi. */
+    public void disconnect() {
+        String h = chosenHost != null ? chosenHost : senderHost;
+        if (h != null && !"USB".equals(h)) {
+            Computer c = seen.get(h);
+            try { reply(InetAddress.getByName(h), c != null ? c.port : PORT, "MMPX"); } catch (IOException ignored) {}
+            blockedHost = h; blockedUntil = System.currentTimeMillis() + 4000;
+        }
+        chosenHost = null; senderName = null; senderHost = null; lastPacketMs = 0;
+    }
+
+    public String chosenHost() { return chosenHost; }
+
+    /** true si cet ordinateur a été déconnecté à la main (on ne s'y reconnecte pas tout seul). */
+    public boolean isBlocked(String host) { return host.equals(blockedHost) && System.currentTimeMillis() < blockedUntil; }
+
+    /** true quand l'ordinateur est relié par le câble USB. */
+    public boolean viaUsb() { return usb != null && System.currentTimeMillis() - lastUsbMs < 4000; }
 
     public boolean isRunning() { return running; }
     public String senderName() { return senderName; }
@@ -93,23 +161,86 @@ public final class ConnectReceiver {
                 long now = System.nanoTime();
                 int len = pkt.getLength();
                 if (len < 4 || buf[0] != 'M' || buf[1] != 'M' || buf[2] != 'P') continue;
-                lastPacketMs = System.currentTimeMillis();
                 InetAddress from = pkt.getAddress();
-                switch (buf[3]) {
-                    case 'D': reply(from, pkt.getPort(), "MMPH" + phoneName); break;
-                    case 'N': {
-                        String n = new String(buf, 4, len - 4, StandardCharsets.UTF_8).trim();
-                        String host = from.getHostAddress();
-                        if (!n.equals(senderName) || !host.equals(senderHost)) { senderName = n; senderHost = host; listener.onSender(n, host); }
-                        break;
-                    }
-                    case 'M': if (len > 4) listener.onMidi(buf, 4, len - 4, now); break;
-                    case 'S': if (len > 24) audio(buf, len, now); break;
-                    default: break;
+                String host = from.getHostAddress();
+                if (buf[3] == 'D') { reply(from, pkt.getPort(), "MMPH" + phoneName); continue; }
+                if (buf[3] == 'A') {
+                    String n = new String(buf, 4, len - 4, StandardCharsets.UTF_8).trim();
+                    seen.put(host, new Computer(n.isEmpty() ? host : n, host, pkt.getPort(), System.currentTimeMillis()));
+                    continue;
                 }
+                if (buf[3] == 'C') {                    // l'ordinateur nous choisit (clic dans Connect)
+                    if (host.equals(blockedHost)) blockedHost = null;
+                    chosenHost = host;
+                    String n = new String(buf, 4, len - 4, StandardCharsets.UTF_8).trim();
+                    if (!n.isEmpty()) seen.put(host, new Computer(n, host, pkt.getPort(), System.currentTimeMillis()));
+                    continue;
+                }
+                if (buf[3] == 'X') {
+                    if (host.equals(chosenHost) || host.equals(senderHost)) {
+                        chosenHost = null; senderName = null; senderHost = null; lastPacketMs = 0;
+                        blockedHost = host; blockedUntil = Long.MAX_VALUE;   // déconnecté depuis l'ordinateur : pas de reconnexion auto
+                    }
+                    continue;
+                }
+                if (viaUsb()) continue;                 // le câble est prioritaire : on ignore le Wi-Fi
+                if (host.equals(blockedHost) && System.currentTimeMillis() < blockedUntil) continue;
+                if (buf[3] == 'N' && chosenHost == null) chosenHost = host;   // l'ordinateur nous a choisis
+                if (chosenHost != null && !host.equals(chosenHost)) continue;  // un seul ordinateur à la fois
+                handle(buf, len, now, host);
             } catch (IOException e) {
                 if (!running) break;
             }
+        }
+    }
+
+    private void handle(byte[] buf, int len, long now, String host) {
+        lastPacketMs = System.currentTimeMillis();
+        switch (buf[3]) {
+            case 'N': {
+                String n = new String(buf, 4, len - 4, StandardCharsets.UTF_8).trim();
+                if (!n.equals(senderName) || !host.equals(senderHost)) { senderName = n; senderHost = host; listener.onSender(n, host); }
+                break;
+            }
+            case 'M': if (len > 4) listener.onMidi(buf, 4, len - 4, now); break;
+            case 'S': if (len > 24) audio(buf, len, now); break;
+            default: break;
+        }
+    }
+
+    /** Câble USB : connexion au port que l'ordinateur a ouvert avec « adb reverse ». */
+    private void usbLoop() {
+        byte[] buf = new byte[65536];
+        while (running) {
+            Socket c = null;
+            try {
+                c = new Socket();
+                c.setTcpNoDelay(true);
+                c.connect(new InetSocketAddress("127.0.0.1", USB_PORT), 500);
+                c.setSoTimeout(3000);
+                OutputStream out = c.getOutputStream();
+                byte[] hello = ("MMPH" + phoneName).getBytes(StandardCharsets.UTF_8);
+                out.write(new byte[]{(byte) (hello.length >> 8), (byte) hello.length});
+                out.write(hello);
+                out.flush();
+                DataInputStream in = new DataInputStream(c.getInputStream());
+                usb = c;
+                while (running) {
+                    int len = in.readUnsignedShort();
+                    in.readFully(buf, 0, len);
+                    long now = System.nanoTime();
+                    lastUsbMs = System.currentTimeMillis();
+                    if (len < 4 || buf[0] != 'M' || buf[1] != 'M' || buf[2] != 'P') continue;
+                    if (buf[3] == 'D') continue;
+                    handle(buf, len, now, "USB");
+                }
+            } catch (IOException e) {
+                // pas de câble (connexion refusée) ou câble débranché : on réessaie
+            } finally {
+                if (c != null) try { c.close(); } catch (IOException ignored) {}
+                if (usb == c) usb = null;
+            }
+            if (running) try { Thread.sleep(1000); } catch (InterruptedException ignored) { return; }
         }
     }
 

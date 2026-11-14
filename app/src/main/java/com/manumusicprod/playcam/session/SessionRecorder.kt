@@ -203,8 +203,8 @@ class SessionRecorder(
         val t = midi.stopAudioRecording() ?: return null
         val gapMs = t.gapFrames * 1000 / maxOf(1, t.sampleRate)
         return AudioEngine.Take(t.file, t.firstFrameNanos, t.sampleRate, t.channels, t.frames,
-            "Ordinateur (Wi-Fi) · ${midi.computer.value ?: "Manu Play Cam Connect"}", 0,
-            if (gapMs > 200) "Wi-Fi instable : $gapMs ms de son perdu ont été remplacés par du silence." else null)
+            "Ordinateur (${if (midi.usb.value) "câble" else "Wi-Fi"}) · ${midi.computer.value ?: "Manu Play Cam Connect"}", 0,
+            if (gapMs > 200) "Liaison instable : $gapMs ms de son perdu ont été remplacés par du silence." else null)
     }
 
     private fun cleanupFailed(msg: String) {

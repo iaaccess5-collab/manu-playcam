@@ -4,30 +4,33 @@ Application Android pour pianistes, claviéristes et créateurs de contenu music
 et l'application enregistre **en même temps** la vidéo, le son de l'instrument et le MIDI. Le clavier virtuel
 et le nom des accords sont **incrustés dans la vidéo** pendant qu'on joue.
 
-## Comment ça marche (version 1.1)
+## Comment ça marche (version 1.2)
 
-L'application a une seule connexion : **le Wi-Fi vers ton ordinateur**.
+Deux façons de relier le téléphone à l'ordinateur, qui marchent chacune seule :
 
-1. Sur l'ordinateur (Mac ou Windows), ouvre **Manu Play Cam Connect**. Il trouve le téléphone tout seul sur le Wi-Fi.
-2. Il envoie au téléphone **le MIDI** que tu joues (ton clavier relié à l'ordinateur, ou une piste envoyée vers le port
-   « Manu Play Cam ») et **le son** de ton logiciel (Logic, Cubase, Ableton, MainStage…).
-3. Dans l'application, tu filmes : le clavier virtuel s'allume, l'accord s'affiche, et le son du logiciel entre dans la vidéo.
+- **Wi-Fi** : l'ordinateur et le téléphone sur le même Wi-Fi. Ouvre **Manu Play Cam Connect** : le téléphone voit
+  l'ordinateur **par son nom**, l'ordinateur voit le téléphone par son nom. Touche « Connecter » d'un côté ou de l'autre.
+  Aucune adresse à taper ; la fois suivante, ils se retrouvent tout seuls.
+- **Câble USB** : active une fois le « Débogage USB » du téléphone, branche-le. Connect ouvre la liaison tout seul
+  (adb est inclus). Quand le câble est branché, il passe avant le Wi-Fi.
 
-Si Connect n'envoie pas de son, la vidéo prend automatiquement **le son du micro du téléphone**, et le MIDI continue
-d'arriver par le Wi-Fi (par Connect, ou sans rien installer par la **session MIDI réseau** du Mac / rtpMIDI sous Windows).
+Connect envoie au téléphone **le MIDI** que tu joues (ton clavier relié à l'ordinateur, ou une piste envoyée vers le port
+« Manu Play Cam ») et **le son** de ton logiciel (Logic, Cubase, Ableton, MainStage…). Dans l'application, tu filmes :
+le clavier virtuel s'allume, l'accord s'affiche, et le son du logiciel entre dans la vidéo. Sans son de l'ordinateur,
+la vidéo prend automatiquement le micro du téléphone.
 
 | Élément | Détail |
 |---|---|
 | Caméra | Avant / arrière, 4K / 1080p / 720p selon le téléphone, 30 ou 60 i/s si pris en charge, mise au point au toucher, exposition, zoom, portrait / paysage |
-| Son | Son de l'ordinateur par le Wi-Fi (48 kHz stéréo, sans compression), ou micro du téléphone. Vumètres stéréo à segments et voyant « SON ENTRANT » |
-| MIDI | Par le Wi-Fi uniquement : Manu Play Cam Connect, ou session MIDI réseau (RTP-MIDI, standard de macOS et de rtpMIDI) |
+| Son | Son de l'ordinateur par le Wi-Fi ou le câble (48 kHz stéréo, sans compression), ou micro du téléphone. Vumètres stéréo à segments et voyant « SON ENTRANT » |
+| Liaison | Wi-Fi (choix par le nom) ou câble USB, avec Manu Play Cam Connect |
 | Accords | Reconnus depuis le MIDI : majeurs, mineurs, 6, 7, maj7, m7, m7♭5, dim7, sus, add9, 9, 11, 13, altérations, renversements |
 | Clavier virtuel | 25 à 88 touches, noms des notes, vélocité, pédale, couleurs, opacité, position et taille réglables sur l'image |
 | Fichiers | `performance.mp4` (image + son + clavier incrusté), `audio.wav`, `performance.mid` calé sur la vidéo |
 
 ## Manu Play Cam Connect (ordinateur)
 
-- **Mac** (macOS 13 ou plus récent) : `.dmg`. Le son du Mac est capté directement (autorisation « Enregistrement de l'écran
+- **Mac** (macOS 10.15 ou plus récent ; son du Mac capté directement à partir de macOS 13) : `.dmg`. Le son du Mac est capté directement (autorisation « Enregistrement de l'écran
   et audio système », demandée une fois), sans logiciel supplémentaire. Ton clavier relié au Mac est capté directement.
   Première ouverture : l'application n'étant pas signée par Apple, fais clic droit › Ouvrir, ou Réglages Système ›
   Confidentialité et sécurité › « Ouvrir quand même ».
@@ -35,7 +38,7 @@ d'arriver par le Wi-Fi (par Connect, ou sans rien installer par la **session MID
   Un clavier déjà ouvert en exclusif par ton logiciel ne peut pas être lu en même temps : envoie alors la piste MIDI
   vers un port virtuel (loopMIDI) ou utilise la session rtpMIDI.
 
-Protocole (UDP, port 5010) : découverte `MMPD`/`MMPH`, présentation `MMPN`, MIDI `MMPM`, son `MMPS`
+Protocole (UDP 5010 en Wi-Fi ; TCP 5011 par le câble, via `adb reverse`, chaque paquet précédé de sa longueur) : annonce `MMPA`, découverte `MMPD`/`MMPH`, choix `MMPC`, déconnexion `MMPX`, présentation `MMPN`, MIDI `MMPM`, son `MMPS`
 (PCM 16 bits, blocs de 5 ms numérotés). Le téléphone recale chaque bloc sur sa propre horloge et comble les pertes par du silence.
 
 ## Synchronisation
@@ -74,8 +77,8 @@ Google Play Store, crée ta propre clé et remplace-la dans `app/build.gradle.kt
 ```
 app/src/main/java/com/manumusicprod/playcam/
   core/      ChordDetector, MidiParser, MidiFileWriter, WavWriter   (Java pur, testé : app/src/test)
-  core/      + ConnectReceiver (son et MIDI de Connect), AppleMidiSession (RTP-MIDI)
-  midi/      MidiHub (liaison Wi-Fi), WifiMidi (session MIDI réseau), Performance (état des touches)
+  core/      + ConnectReceiver (son et MIDI de Connect, Wi-Fi et câble)
+  midi/      MidiHub (liaison avec l'ordinateur), Performance (état des touches)
   audio/     AudioEngine (micro du téléphone : gain, limiteur, vumètre, WAV horodaté)
 companion/   Manu Play Cam Connect (Python : interface, son, MIDI, construction .dmg et .exe)
   camera/    CameraController (CameraX, OverlayEffect, qualité, i/s, zoom, mise au point, exposition)

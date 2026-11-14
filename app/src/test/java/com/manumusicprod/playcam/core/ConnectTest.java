@@ -14,10 +14,12 @@ public class ConnectTest {
     public static void main(String[] args) throws Exception {
         List<String> midi = Collections.synchronizedList(new ArrayList<>());
         final String[] sender = {null};
+        final String[] host = {null};
+        String mode = args.length > 1 ? args[1] : "wifi";   // « wifi » ou « usb » (câble)
         final float[] peak = {0};
         ConnectReceiver r = new ConnectReceiver("Téléphone de test", new ConnectReceiver.Listener() {
             public void onMidi(byte[] d, int o, int l, long t) { midi.add(String.format("%02X", d[o] & 0xFF)); }
-            public void onSender(String name, String host) { sender[0] = name + " @ " + host; }
+            public void onSender(String name, String h) { sender[0] = name + " @ " + h; host[0] = h; }
             public void onLevel(float pl, float pr, float rms) { float p = Math.max(pl, pr); if (p > peak[0]) peak[0] = p; }
         });
         r.start();
@@ -25,6 +27,7 @@ public class ConnectTest {
         // attendre l'ordinateur
         long until = System.currentTimeMillis() + 10_000;
         while (!r.audioActive() && System.currentTimeMillis() < until) Thread.sleep(50);
+        if (mode.equals("usb")) { while (!r.viaUsb() && System.currentTimeMillis() < until) Thread.sleep(50); Thread.sleep(300); }
         File wav = new File(args.length > 0 ? args[0] : "connect.wav");
         r.startRecording(wav);
         long t0 = System.nanoTime();
@@ -36,6 +39,8 @@ public class ConnectTest {
         int fails = 0;
         boolean okSender = sender[0] != null;
         System.out.println((okSender ? "OK   " : "FAIL ") + "Ordinateur présenté : " + sender[0]); if (!okSender) fails++;
+        boolean okMode = mode.equals("usb") ? "USB".equals(host[0]) : (host[0] != null && !"USB".equals(host[0]));
+        System.out.println((okMode ? "OK   " : "FAIL ") + "Liaison : " + (mode.equals("usb") ? "câble USB" : "Wi-Fi") + " (reçu par " + host[0] + ")"); if (!okMode) fails++;
         boolean okMidi = midi.contains("90") && midi.contains("80");
         System.out.println((okMidi ? "OK   " : "FAIL ") + "MIDI reçu : " + midi.size() + " messages"); if (!okMidi) fails++;
         boolean okTake = take != null && take.sampleRate == 48000 && take.channels == 2;

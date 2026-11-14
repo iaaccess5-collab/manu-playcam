@@ -33,8 +33,9 @@ import threading
 import time
 
 APP = "Manu Play Cam Connect"
-VERSION = "1.0.2"
+VERSION = "1.1.0"
 PORT = 5010
+USB_PORT = 5011                 # câble : port TCP relayé par « adb reverse »
 RATE = 48000
 BLOCK = 240                     # 5 ms par paquet : < 1 000 octets, pas de fragmentation Wi-Fi
 VIRTUAL_PORT = "Manu Play Cam"
@@ -157,15 +158,23 @@ def computer_name():
 
 # ==================================================================== réseau
 class Link:
-    """Découverte du téléphone, signal de présence, envoi du son et du MIDI (UDP 5010)."""
+    """Liaison avec le téléphone, par le Wi-Fi (UDP 5010, choix par le nom) ou par le câble USB (TCP 5011 via adb).
 
-    def __init__(self):
+    Wi-Fi : l'ordinateur s'annonce (MMPA + nom) et cherche les téléphones (MMPD → MMPH + nom). Chaque côté affiche
+    les noms trouvés ; un clic d'un côté ou de l'autre relie les deux (MMPC du téléphone, MMPN de l'ordinateur).
+    MMPX = déconnexion. Le dernier téléphone choisi est retrouvé tout seul à l'ouverture suivante.
+    Câble : quand un téléphone est branché (débogage USB autorisé), l'ordinateur ouvre « adb reverse » et le
+    téléphone s'y connecte de lui-même. Le câble est alors prioritaire ; débranché, le Wi-Fi reprend.
+    """
+
+    def __init__(self, usb=True):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self.sock.bind(("0.0.0.0", 0))
         self.sock.settimeout(0.3)
-        self.phone = None            # (ip, nom)
-        self.manual_ip = None
+        self.phone = None            # (ip ou "usb", nom)
+        self.phones = {}             # ip -> [nom, dernière réponse]  (téléphones vus sur le Wi-Fi)
+        self.manual_ip = None        # tests uniquement
         self.last_reply = 0.0
         self.session = random.getrandbits(32)
         self.frame = 0
@@ -179,10 +188,76 @@ class Link:
         self.last_note = ""
         self.events = queue.Queue()
         self.lock = threading.Lock()
+        self.usb_sock = None
+        self.usb_lock = threading.Lock()
+        self.usb_state = "off"       # off · no_adb · waiting · unauthorized · ready · connected
+        self.paused = set()          # téléphones déconnectés à la main : pas de reconnexion automatique
+        self.remembered = self._load_remembered()
         threading.Thread(target=self._net_loop, daemon=True).start()
+        if usb:
+            threading.Thread(target=self._usb_server, daemon=True).start()
+            threading.Thread(target=self._adb_loop, daemon=True).start()
+
+    # ---- mémoire du dernier téléphone
+    def _load_remembered(self):
+        try:
+            return open(_state_file("telephone.txt"), encoding="utf-8").read().strip() or None
+        except Exception:
+            return None
+
+    def _remember(self, name):
+        self.remembered = name
+        try:
+            open(_state_file("telephone.txt"), "w", encoding="utf-8").write(name)
+        except Exception:
+            pass
+
+    @property
+    def via_usb(self):
+        return self.usb_sock is not None
+
+    def phone_list(self):
+        """Téléphones vus sur le Wi-Fi depuis moins de 5 s : [(ip, nom)]."""
+        now = time.time()
+        return sorted([(ip, v[0]) for ip, v in list(self.phones.items()) if now - v[1] < 5], key=lambda x: x[1].lower())
+
+    # ---- choix du téléphone
+    def connect_to(self, ip, name):
+        self.paused.discard(name)
+        if self.via_usb:
+            return
+        self.phone = (ip, name)
+        self.last_reply = time.time()
+        self._remember(name)
+        self.events.put(f"Connecté à {name}")
+        self._udp(b"MMPC" + self.name.encode("utf-8"), ip)
+        self._udp(b"MMPN" + self.name.encode("utf-8"), ip)
+
+    def disconnect(self):
+        p = self.phone
+        if not p:
+            return
+        self.paused.add(p[1])
+        if p[0] != "usb":
+            self._udp(b"MMPX", p[0])
+            self.phone = None
+            self.events.put(f"Déconnecté de {p[1]}")
+
+    def _udp(self, data, ip):
+        try:
+            self.sock.sendto(data, (ip, PORT))
+        except OSError:
+            pass
 
     def _broadcast_targets(self):
         targets = ["255.255.255.255"]
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                ip = info[4][0]
+                if not ip.startswith("127."):
+                    targets.append(".".join(ip.split(".")[:3] + ["255"]))
+        except Exception:
+            pass
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("10.255.255.255", 1))
@@ -191,7 +266,7 @@ class Link:
             targets.append(".".join(ip.split(".")[:3] + ["255"]))
         except OSError:
             pass
-        return targets
+        return list(dict.fromkeys(targets))
 
     def _net_loop(self):
         last_probe = 0.0
@@ -199,41 +274,195 @@ class Link:
             now = time.time()
             if now - last_probe > 1.0:
                 last_probe = now
-                try:
-                    if self.phone:
-                        self.sock.sendto(b"MMPN" + self.name.encode("utf-8"), (self.phone[0], PORT))
-                        self.sock.sendto(b"MMPD", (self.phone[0], PORT))
-                    else:
-                        for t in ([self.manual_ip] if self.manual_ip else self._broadcast_targets()):
-                            self.sock.sendto(b"MMPD", (t, PORT))
-                except OSError:
-                    pass
-                if self.phone and now - self.last_reply > 6:
-                    self.events.put(f"Téléphone perdu ({self.phone[1]}). Nouvelle recherche…")
-                    self.phone = None
+                announce = b"MMPA" + self.name.encode("utf-8")
+                for t in ([self.manual_ip] if self.manual_ip else self._broadcast_targets()):
+                    self._udp(b"MMPD", t)            # qui est là ?
+                    self._udp(announce, t)           # je suis là
+                self.heartbeat_usb()
+                if self.phone and self.phone[0] != "usb":
+                    self._udp(b"MMPN" + self.name.encode("utf-8"), self.phone[0])
+                    self._udp(b"MMPD", self.phone[0])
+                    if now - self.last_reply > 6:
+                        self.events.put(f"Téléphone perdu ({self.phone[1]}). Il sera retrouvé dès qu'il revient.")
+                        self.phone = None
+                if self.phone is None and not self.via_usb:
+                    found = self.phone_list()
+                    pick = next(((ip, n) for ip, n in found if n == self.remembered and n not in self.paused), None)
+                    if pick is None and self.remembered is None and len(found) == 1 and found[0][1] not in self.paused:
+                        pick = found[0]               # première utilisation : un seul téléphone, on le relie
+                    if pick:
+                        self.connect_to(*pick)
             try:
                 data, addr = self.sock.recvfrom(512)
             except (socket.timeout, OSError):
                 continue
+            ip = addr[0]
             if data.startswith(b"MMPH"):
-                self.last_reply = time.time()
-                name = data[4:].decode("utf-8", "replace") or addr[0]
-                if not self.phone or self.phone[0] != addr[0]:
-                    self.phone = (addr[0], name)
-                    self.events.put(f"Connecté à {name}")
-                    self.sock.sendto(b"MMPN" + self.name.encode("utf-8"), (addr[0], PORT))
+                name = data[4:].decode("utf-8", "replace") or ip
+                self.phones[ip] = [name, time.time()]
+                if self.phone and self.phone[0] == ip:
+                    self.last_reply = time.time()
+                    if self.phone[1] != name:
+                        self.phone = (ip, name)
+            elif data.startswith(b"MMPC"):                 # le téléphone nous a choisi
+                name = data[4:].decode("utf-8", "replace") or ip
+                self.phones[ip] = [name, time.time()]
+                self.connect_to(ip, name)
+            elif data.startswith(b"MMPX"):                 # le téléphone se déconnecte
+                if self.phone and self.phone[0] == ip:
+                    self.paused.add(self.phone[1])
+                    self.events.put(f"{self.phone[1]} s'est déconnecté")
+                    self.phone = None
 
+    # ---- câble USB
+    def _usb_server(self):
+        try:
+            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(("127.0.0.1", USB_PORT))
+            srv.listen(2)
+        except OSError as e:
+            log("câble : port indisponible", e)
+            return
+        while self.running:
+            try:
+                c, _ = srv.accept()
+            except OSError:
+                continue
+            threading.Thread(target=self._usb_client, args=(c,), daemon=True).start()
+
+    def _usb_client(self, c):
+        try:
+            c.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            c.settimeout(5)
+            head = self._recv_exact(c, 2)
+            body = self._recv_exact(c, struct.unpack(">H", head)[0])
+            if not body.startswith(b"MMPH"):
+                c.close()
+                return
+            name = body[4:].decode("utf-8", "replace") or "Téléphone"
+            old = self.usb_sock
+            with self.usb_lock:
+                self.usb_sock = c
+            if old is not None:
+                try:
+                    old.close()
+                except OSError:
+                    pass
+            prev = self.phone
+            if prev and prev[0] != "usb":
+                self._udp(b"MMPX", prev[0])          # le câble remplace le Wi-Fi
+            self.phone = ("usb", name)
+            self.usb_state = "connected"
+            self._remember(name)
+            self.events.put(f"Connecté à {name} par câble")
+            log("câble : connecté à", name)
+            self._usb_send(b"MMPN" + self.name.encode("utf-8"))
+            c.settimeout(None)
+            while self.running:
+                d = c.recv(64)
+                if not d:
+                    break
+        except (OSError, struct.error):
+            pass
+        finally:
+            if self.usb_sock is c:
+                with self.usb_lock:
+                    self.usb_sock = None
+                if self.phone and self.phone[0] == "usb":
+                    self.events.put("Câble débranché")
+                    self.phone = None
+                self.usb_state = "ready"
+            try:
+                c.close()
+            except OSError:
+                pass
+
+    @staticmethod
+    def _recv_exact(c, n):
+        b = b""
+        while len(b) < n:
+            d = c.recv(n - len(b))
+            if not d:
+                raise OSError("fermé")
+            b += d
+        return b
+
+    def _usb_send(self, data):
+        c = self.usb_sock
+        if c is None:
+            return False
+        try:
+            with self.usb_lock:
+                c.sendall(struct.pack(">H", len(data)) + data)
+            return True
+        except OSError:
+            try:
+                c.close()
+            except OSError:
+                pass
+            return False
+
+    def _adb_loop(self):
+        adb = find_adb()
+        if not adb:
+            self.usb_state = "no_adb"
+            return
+        import subprocess
+        kw = {"capture_output": True, "text": True, "timeout": 8}
+        if IS_WIN:
+            kw["creationflags"] = 0x08000000      # pas de fenêtre de console
+        done = set()
+        try:
+            # le serveur adb reste en arrière-plan : on le lance sans tuyaux, sinon la lecture attendrait sa fin
+            quiet = {k: v for k, v in kw.items() if k != "capture_output"}
+            subprocess.run([adb, "start-server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           stdin=subprocess.DEVNULL, **{**quiet, "text": False, "timeout": 20})
+        except OSError as e:
+            log("câble : adb ne démarre pas", repr(e))
+            self.usb_state = "no_adb"
+            return
+        except Exception as e:
+            log("câble : démarrage adb", repr(e))
+        while self.running:
+            try:
+                out = subprocess.run([adb, "devices"], **kw).stdout
+                devs = [ln.split("\t") for ln in out.splitlines()[1:] if "\t" in ln]
+                ready = [d for d, st in devs if st == "device"]
+                if any(st == "unauthorized" for _, st in devs) and not ready:
+                    self.usb_state = "unauthorized"
+                elif not ready:
+                    self.usb_state = "waiting" if not self.via_usb else "connected"
+                    done.clear()
+                for d in ready:
+                    if d not in done:
+                        r = subprocess.run([adb, "-s", d, "reverse", f"tcp:{USB_PORT}", f"tcp:{USB_PORT}"], **kw)
+                        if r.returncode == 0:
+                            done.add(d)
+                            log("câble : téléphone branché", d)
+                if ready and not self.via_usb:
+                    self.usb_state = "ready"
+                done &= set(ready)
+            except OSError as e:
+                log("câble : adb ne démarre pas", repr(e))
+                self.usb_state = "no_adb"
+                return
+            except Exception as e:
+                log("câble : adb", repr(e))
+            time.sleep(2)
+
+    # ---- envoi
     def send_pcm(self, pcm_bytes, frames, channels=2, rate=RATE):
         """pcm_bytes : PCM 16 bits little-endian entrelacé."""
         with self.lock:
             frame = self.frame
             self.frame += frames
         if self.phone and self.send_audio:
-            header = b"MMPS" + struct.pack(">IQIB3x", self.session, frame, rate, channels)
-            try:
-                self.sock.sendto(header + pcm_bytes, (self.phone[0], PORT))
-            except OSError:
-                pass
+            pkt = b"MMPS" + struct.pack(">IQIB3x", self.session, frame, rate, channels) + pcm_bytes
+            if self.phone[0] == "usb":
+                self._usb_send(pkt)
+            else:
+                self._udp(pkt, self.phone[0])
 
     def send_midi_bytes(self, data):
         self.midi_count += 1
@@ -241,13 +470,35 @@ class Link:
             names = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"]
             self.last_note = f"{names[data[1] % 12]}{data[1] // 12 - 1}"
         if self.phone and self.send_midi:
-            try:
-                self.sock.sendto(b"MMPM" + bytes(data), (self.phone[0], PORT))
-            except OSError:
-                pass
+            pkt = b"MMPM" + bytes(data)
+            if self.phone[0] == "usb":
+                self._usb_send(pkt)
+            else:
+                self._udp(pkt, self.phone[0])
+
+    def heartbeat_usb(self):
+        if self.via_usb:
+            self._usb_send(b"MMPN" + self.name.encode("utf-8"))
 
     def stop(self):
         self.running = False
+        p = self.phone
+        if p and p[0] != "usb":
+            self._udp(b"MMPX", p[0])
+
+
+def find_adb():
+    """adb livré avec l'application (dossier adb/), sinon celui de l'ordinateur."""
+    import shutil
+    exe = "adb.exe" if IS_WIN else "adb"
+    bases = [getattr(sys, "_MEIPASS", None), os.path.dirname(os.path.abspath(sys.argv[0])),
+             os.path.dirname(os.path.abspath(__file__))]
+    for b in bases:
+        if b:
+            for p in (os.path.join(b, "adb", exe), os.path.join(b, "..", "Resources", "adb", exe)):
+                if os.path.isfile(p):
+                    return os.path.abspath(p)
+    return shutil.which("adb")
 
 
 class Packer:
@@ -571,7 +822,7 @@ def demo_chords(link, stop):
 
 # ==================================================================== mode texte
 def console(args):
-    link = Link()
+    link = Link(usb=not args.no_usb)
     if args.phone:
         link.manual_ip = args.phone
         if args.tone:
@@ -645,8 +896,8 @@ def gui(screenshot=None, quit_after=None):
     log("fenêtre : Tk", root.tk.call("info", "patchlevel"))
     root.title(APP)
     root.configure(bg=EBONY)
-    root.geometry("500x690")
-    root.minsize(460, 640)
+    root.geometry("520x760")
+    root.minsize(480, 700)
     base = "Helvetica Neue" if IS_MAC else "Segoe UI"
 
     def F(size, weight="normal", slant="roman"):
@@ -691,7 +942,7 @@ def gui(screenshot=None, quit_after=None):
     dash = tk.Canvas(eb, width=22, height=6, bg=EBONY, highlightthickness=0)
     dash.create_polygon(5, 0, 22, 0, 17, 6, 0, 6, fill=GREEN, outline="")
     dash.pack(side="left")
-    tk.Label(eb, text="  SON + MIDI · WI-FI", bg=EBONY, fg=GREEN, font=F(9, "bold")).pack(side="left")
+    tk.Label(eb, text="  SON + MIDI · WI-FI OU CÂBLE", bg=EBONY, fg=GREEN, font=F(9, "bold")).pack(side="left")
     tk.Label(title, text="MANU PLAY CAM", bg=EBONY, fg=IVORY, font=F(26, "bold", "italic")).pack(anchor="w")
     tk.Label(title, text="CONNECT", bg=EBONY, fg=GREEN, font=F(26, "bold", "italic")).pack(anchor="w")
 
@@ -706,7 +957,47 @@ def gui(screenshot=None, quit_after=None):
     status = tk.Label(row, text="", bg=EBONY2, fg=IVORY, font=F(13, "bold"))
     status.pack(side="left", padx=8)
     hint = tk.Label(card, text="", bg=EBONY2, fg=MUTE, font=F(10), wraplength=420, justify="left")
-    hint.pack(anchor="w", padx=16, pady=(0, 14))
+    hint.pack(anchor="w", padx=16, pady=(0, 6))
+    plist = tk.Frame(card, bg=EBONY2)                 # téléphones trouvés : un nom, un bouton
+    plist.pack(fill="x", padx=16, pady=(0, 8))
+    usb_row = tk.Frame(card, bg=EBONY2)
+    usb_row.pack(fill="x", padx=16, pady=(2, 14))
+    tk.Label(usb_row, text="CÂBLE USB", bg=EBONY2, fg=GREEN, font=F(8, "bold")).pack(side="left")
+    usb_lbl = tk.Label(usb_row, text="", bg=EBONY2, fg=MUTE, font=F(9), wraplength=340, justify="left")
+    usb_lbl.pack(side="left", padx=8)
+    plist_state = {"key": None}
+
+    def btn(parent, text, cmd, primary=True):
+        # bouton dessiné (sur Mac, les boutons système ignorent les couleurs de la marque)
+        bg, fg = (GREEN, EBONY) if primary else (EBONY3, IVORY)
+        b = tk.Label(parent, text=text, bg=bg, fg=fg, font=F(10, "bold"), padx=14, pady=5, cursor="hand2")
+        b.bind("<Button-1>", lambda e: cmd())
+        b.bind("<Enter>", lambda e: b.config(bg=GREEN_DEEP if primary else EBONY2, fg=IVORY))
+        b.bind("<Leave>", lambda e: b.config(bg=bg, fg=fg))
+        return b
+
+    def draw_phones():
+        found = link.phone_list()
+        cur = link.phone
+        key = (tuple(found), cur, link.via_usb)
+        if key == plist_state["key"]:
+            return
+        plist_state["key"] = key
+        for w in plist.winfo_children():
+            w.destroy()
+        rows = [] if link.via_usb else list(found)
+        if cur and cur[0] != "usb" and all(ip != cur[0] for ip, _ in rows):
+            rows.insert(0, cur)
+        for ip, name in rows:
+            r = tk.Frame(plist, bg=EBONY2)
+            r.pack(fill="x", pady=3)
+            on = bool(cur) and cur[0] == ip
+            tk.Label(r, text=("●  " if on else "○  ") + name, bg=EBONY2, fg=GREEN if on else IVORY,
+                     font=F(11, "bold" if on else "normal")).pack(side="left")
+            if on:
+                btn(r, "Déconnecter", link.disconnect, primary=False).pack(side="right")
+            elif not link.via_usb:
+                btn(r, "Connecter", lambda ip=ip, name=name: link.connect_to(ip, name)).pack(side="right")
 
     # ---- son
     sec = tk.Frame(root, bg=EBONY)
@@ -763,7 +1054,10 @@ def gui(screenshot=None, quit_after=None):
             hold = (not lit) and m["hold"][0] > -60 and abs(m["hold"][0] - th) <= 48 / SEG
             c.itemconfig(it, fill=seg_color(i) if lit else dim(seg_color(i), 0.75) if hold else dim(seg_color(i)))
 
-    help_txt = ("Mac : à la première utilisation, autorise « Enregistrement de l'écran et audio système » dans "
+    help_txt = ("Ton macOS est antérieur à macOS 13 : le son du Mac ne peut pas être capté directement. Choisis une entrée "
+                "audio (carte son, ou BlackHole pour le son des logiciels). Le MIDI et le câble marchent normalement."
+                if IS_MAC and not MacSystemAudio.available else
+                "Mac : à la première utilisation, autorise « Enregistrement de l'écran et audio système » dans "
                 "Réglages Système › Confidentialité et sécurité. Le son de Logic, Cubase… est alors envoyé tel quel, "
                 "et tu continues de l'entendre normalement." if IS_MAC else
                 "Windows : « Son de l'ordinateur » envoie ce que tu entends, ton logiciel de musique compris.")
@@ -778,21 +1072,6 @@ def gui(screenshot=None, quit_after=None):
     tk.Label(sec2, text=f"Ton clavier relié à l'ordinateur est capté directement. Depuis ton logiciel, tu peux aussi "
                         f"envoyer une piste MIDI vers le port « {VIRTUAL_PORT} ».",
              bg=EBONY, fg=MUTE, font=F(9), wraplength=440, justify="left").pack(anchor="w")
-
-    # ---- adresse manuelle
-    man = tk.Frame(root, bg=EBONY)
-    man.pack(fill="x", padx=24, pady=(16, 0))
-    tk.Label(man, text="Téléphone introuvable ? Saisis l'adresse affichée dans l'application :", bg=EBONY, fg=MUTE, font=F(9)).pack(anchor="w")
-    mrow = tk.Frame(man, bg=EBONY)
-    mrow.pack(anchor="w", pady=6)
-    ip_var = tk.StringVar()
-    tk.Entry(mrow, textvariable=ip_var, width=18, bg=EBONY2, fg=IVORY, insertbackground=IVORY, relief="flat", font=F(11)).pack(side="left", ipady=5)
-
-    def use_ip():
-        link.manual_ip = ip_var.get().strip() or None
-        link.phone = None
-    tk.Button(mrow, text="Utiliser", command=use_ip, bg=GREEN, fg=EBONY, activebackground=GREEN_DEEP, relief="flat",
-              font=F(10, "bold"), padx=14).pack(side="left", padx=8)
 
     tk.Label(root, text=f"© MANU MUSIC PROD · Emmanuel NOUHOU   ·   v{VERSION}", bg=EBONY, fg=MUTE, font=F(8)).pack(side="bottom", pady=10)
 
@@ -851,13 +1130,26 @@ def gui(screenshot=None, quit_after=None):
         while not link.events.empty():
             link.events.get_nowait()
         if link.phone:
-            status.config(text=f"Connecté à {link.phone[1]}")
+            status.config(text=f"Connecté à {link.phone[1]}" + ("  ·  câble" if link.via_usb else "  ·  Wi-Fi"))
             hint.config(text="Lance la vidéo dans l'application et joue : les notes et le son arrivent dans le téléphone.")
             lamp.itemconfig(lamp_dot, fill=GREEN)
+        elif link.phone_list():
+            status.config(text="Choisis ton téléphone")
+            hint.config(text="Téléphones trouvés sur ton Wi-Fi :")
+            lamp.itemconfig(lamp_dot, fill=AMBER)
         else:
             status.config(text="Recherche du téléphone…")
-            hint.config(text="Ouvre Manu Play Cam sur le téléphone, connecté au même Wi-Fi que cet ordinateur.")
+            hint.config(text="Ouvre Manu Play Cam sur le téléphone, sur le même Wi-Fi que cet ordinateur, ou branche-le avec un câble USB.")
             lamp.itemconfig(lamp_dot, fill=MUTE if int(time.time() * 2) % 2 else EBONY3)
+        draw_phones()
+        usb_lbl.config(text={
+            "connected": "Téléphone relié par le câble.",
+            "ready": "Téléphone branché. Ouvre Manu Play Cam dessus.",
+            "unauthorized": "Sur le téléphone, accepte « Autoriser le débogage USB ».",
+            "waiting": "Aucun téléphone branché. Le câble marche après avoir activé le débogage USB (voir l'application).",
+            "no_adb": "Indisponible sur cet ordinateur.",
+            "off": "",
+        }.get(link.usb_state, ""), fg=GREEN if link.usb_state == "connected" else MUTE)
         if last_err["msg"] and time.time() - last_err["t"] < 15:
             hint.config(text=last_err["msg"], fg=AMBER)
         else:
@@ -934,7 +1226,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=APP)
     ap.add_argument("--console", action="store_true", help="mode texte, sans fenêtre")
     ap.add_argument("--tone", action="store_true", help="son et accords de test (mode texte)")
-    ap.add_argument("--phone", help="adresse IP du téléphone")
+    ap.add_argument("--phone", help="adresse IP du téléphone (tests)")
+    ap.add_argument("--no-usb", action="store_true", help="sans le câble (tests)")
     ap.add_argument("--seconds", type=float, default=0, help="durée (tests)")
     ap.add_argument("--selftest", action="store_true", help="vérifie les modules et quitte")
     ap.add_argument("--screenshot", help="enregistre une capture de la fenêtre puis quitte")

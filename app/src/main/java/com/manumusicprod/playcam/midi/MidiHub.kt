@@ -9,12 +9,14 @@ import com.manumusicprod.playcam.core.MidiParser
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.io.File
+import java.net.Inet4Address
+import java.net.NetworkInterface
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * Liaison Wi-Fi avec l'ordinateur — la seule connexion de l'application :
- *  - « Manu Play Cam Connect » (logiciel de l'ordinateur) envoie le SON et le MIDI (port 5010) ;
- *  - en option, la session MIDI réseau du Mac / rtpMIDI (RTP-MIDI) envoie le MIDI seul.
+ * Liaison avec l'ordinateur par « Manu Play Cam Connect », qui envoie le SON et le MIDI :
+ *  - par le Wi-Fi (port UDP 5010) ;
+ *  - ou par le câble USB (port TCP 5011 ouvert par Connect avec « adb reverse »), prioritaire quand il est branché.
  */
 class MidiHub(private val context: Context, private val prefs: Prefs, val performance: Performance) {
 
@@ -33,6 +35,13 @@ class MidiHub(private val context: Context, private val prefs: Prefs, val perfor
     val computer: StateFlow<String?> = _computer
     private val _audioLevel = MutableStateFlow(AudioEngine.Level(fromComputer = true))
     val audioLevel: StateFlow<AudioEngine.Level> = _audioLevel
+    private val _usb = MutableStateFlow(false)
+    /** true quand l'ordinateur est relié par le câble USB. */
+    val usb: StateFlow<Boolean> = _usb
+    private val _found = MutableStateFlow<List<ConnectReceiver.Computer>>(emptyList())
+    /** Ordinateurs trouvés sur le Wi-Fi (Manu Play Cam Connect ouvert), par leur nom. */
+    val found: StateFlow<List<ConnectReceiver.Computer>> = _found
+    @Volatile private var manualOff: String? = null    // ordinateur déconnecté à la main : pas de reconnexion auto
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
 
@@ -40,39 +49,64 @@ class MidiHub(private val context: Context, private val prefs: Prefs, val perfor
 
     val connect = ConnectReceiver(phoneName, object : ConnectReceiver.Listener {
         override fun onMidi(data: ByteArray, offset: Int, length: Int, arrivalNanos: Long) { connectParser.feed(data, offset, length, arrivalNanos) }
-        override fun onSender(name: String, host: String) { _computer.value = name }
+        override fun onSender(name: String, host: String) {
+            _computer.value = name; _usb.value = host == "USB"
+            if (host != "USB") prefs.lastComputer = name
+        }
         override fun onLevel(peakL: Float, peakR: Float, rms: Float) {
             val p = maxOf(peakL, peakR)
             _audioLevel.value = AudioEngine.Level(db(p), db(rms), p >= 0.985f, true, db(peakL), db(peakR), fromComputer = true)
         }
     })
 
-    /** Option : MIDI seul par la session réseau du Mac ou rtpMIDI (Windows). */
-    val wifi = WifiMidi(context, prefs) { msg, len, t ->
-        dispatch(msg[0].toInt() and 0xFF, msg[1].toInt() and 0x7F, if (len >= 3) msg[2].toInt() and 0x7F else -1, t)
-    }
-
     private val watcher = Thread {
         while (true) {
-            try { Thread.sleep(1000) } catch (e: InterruptedException) { break }
+            try { Thread.sleep(500) } catch (e: InterruptedException) { break }
+            val list = connect.computers()
+            if (list.map { it.name to it.host } != _found.value.map { it.name to it.host }) _found.value = list
+            // reconnexion automatique au dernier ordinateur choisi
+            if (!connect.senderActive() && connect.chosenHost() == null) {
+                val last = prefs.lastComputer
+                list.firstOrNull { it.name == last && it.name != manualOff && !connect.isBlocked(it.host) }?.let { connect.connectTo(it) }
+            }
             if (!connect.senderActive() && _computer.value != null) { _computer.value = null; performance.clear() }
+            val u = connect.viaUsb() && connect.senderActive()
+            if (_usb.value != u) _usb.value = u
             if (!connect.audioActive() && _audioLevel.value.active) _audioLevel.value = AudioEngine.Level(fromComputer = true)
         }
     }.apply { isDaemon = true; name = "mmp-link-watch" }
 
     fun start() {
-        try { connect.start() } catch (e: Exception) { note("Le Wi-Fi n'a pas pu démarrer : ${e.message}") }
-        if (prefs.networkMidi) wifi.start()
+        // sans ce verrou, certains téléphones ignorent les annonces envoyées à tout le Wi-Fi (recherche par le nom)
+        runCatching {
+            val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+            wm.createMulticastLock("mmp-connect").apply { setReferenceCounted(false); acquire() }
+        }
+        try { connect.start() } catch (e: Exception) { note("La liaison avec l'ordinateur n'a pas pu démarrer : ${e.message}") }
         watcher.start()
     }
 
     fun addListener(l: RawListener) { listeners.add(l) }
     fun removeListener(l: RawListener) { listeners.remove(l) }
 
-    /** Vrai si un ordinateur envoie quelque chose (Connect ou session MIDI réseau). */
-    fun isLinked(): Boolean = _computer.value != null || wifi.isLinked()
+    /** Vrai si un ordinateur est relié (Wi-Fi ou câble). */
+    fun isLinked(): Boolean = _computer.value != null
 
-    fun linkedName(): String? = _computer.value ?: wifi.linked.value.firstOrNull()?.name
+    fun linkedName(): String? = _computer.value
+
+    /** Relie le téléphone à cet ordinateur (choisi par son nom). */
+    fun connectTo(c: ConnectReceiver.Computer) {
+        manualOff = null
+        prefs.lastComputer = c.name
+        connect.connectTo(c)
+    }
+
+    fun disconnect() {
+        manualOff = _computer.value
+        connect.disconnect()
+        _computer.value = null
+        performance.clear()
+    }
 
     // ---- son de l'ordinateur pour la vidéo
     fun startAudioRecording(file: File) = connect.startRecording(file)
@@ -97,11 +131,6 @@ class MidiHub(private val context: Context, private val prefs: Prefs, val perfor
         _log.value = (listOf(line) + _log.value).take(40)
     }
 
-    fun setSessionMidiEnabled(on: Boolean) {
-        prefs.networkMidi = on
-        if (on) wifi.start() else wifi.stop()
-    }
-
     fun note(msg: String) { _message.value = msg }
     fun consumeMessage() { _message.value = null }
 
@@ -111,6 +140,13 @@ class MidiHub(private val context: Context, private val prefs: Prefs, val perfor
         private val EN = arrayOf("C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B")
         private val FR = arrayOf("Do", "Do♯", "Ré", "Mi♭", "Mi", "Fa", "Fa♯", "Sol", "La♭", "La", "Si♭", "Si")
         fun noteName(n: Int, french: Boolean = false): String = (if (french) FR else EN)[((n % 12) + 12) % 12] + (n / 12 - 1)
+        fun localAddresses(): List<String> = try {
+            NetworkInterface.getNetworkInterfaces().toList()
+                .filter { it.isUp && !it.isLoopback }
+                .flatMap { it.inetAddresses.toList() }
+                .filterIsInstance<Inet4Address>()
+                .mapNotNull { it.hostAddress }
+        } catch (e: Exception) { emptyList() }
         fun pitchName(n: Int, french: Boolean): String = (if (french) FR else EN)[((n % 12) + 12) % 12]
     }
 }

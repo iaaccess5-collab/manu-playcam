@@ -2,7 +2,14 @@ package com.manumusicprod.playcam.ui
 
 import android.content.Intent
 import android.net.Uri
+import android.provider.Settings
 import android.widget.Toast
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,13 +21,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Text
@@ -35,10 +41,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.manumusicprod.playcam.PlayCamApp
-import com.manumusicprod.playcam.midi.WifiMidi
 import kotlin.math.roundToInt
 
 const val CONNECT_DOWNLOAD_URL = "https://github.com/iaaccess5-collab/manu-playcam/releases/latest"
@@ -50,45 +54,37 @@ fun ComputerScreen(onBack: () -> Unit) {
     val prefs = app.prefs
     val ctx = LocalContext.current
     val computer by midi.computer.collectAsState()
+    val usb by midi.usb.collectAsState()
+    val found by midi.found.collectAsState()
     val level by midi.audioLevel.collectAsState()
     val log by midi.log.collectAsState()
     val msg by midi.message.collectAsState()
-    val found by midi.wifi.found.collectAsState()
-    val linked by midi.wifi.linked.collectAsState()
-    val searching by midi.wifi.searching.collectAsState()
-    val connecting by midi.wifi.connecting.collectAsState()
-    val wifiInfo by midi.wifi.info.collectAsState()
     var source by remember { mutableStateOf(prefs.audioSource) }
-    var sessionOn by remember { mutableStateOf(prefs.networkMidi) }
-    var showSession by remember { mutableStateOf(linked.isNotEmpty()) }
-    var showGuide by remember { mutableStateOf(computer == null) }
-    var manualIp by remember { mutableStateOf("") }
+    var showGuide by remember { mutableStateOf(computer == null && found.isEmpty()) }
+    var showCable by remember { mutableStateOf(false) }
 
     LaunchedEffect(msg) { msg?.let { Toast.makeText(ctx, it, Toast.LENGTH_LONG).show(); midi.consumeMessage() } }
-    LaunchedEffect(wifiInfo) { wifiInfo?.let { Toast.makeText(ctx, it, Toast.LENGTH_LONG).show(); midi.wifi.consumeInfo() } }
 
     Column(Modifier.fillMaxSize()) {
-        ScreenTopBar("Ordinateur (Wi-Fi)", onBack)
+        ScreenTopBar("Ordinateur", onBack)
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)) {
 
             // ---------------- état de la liaison
-            MmpCard(highlight = computer != null || linked.isNotEmpty()) {
+            MmpCard(highlight = computer != null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    StatusDot(computer != null || linked.isNotEmpty(), 11.dp)
+                    StatusDot(computer != null, 11.dp)
                     Spacer(Modifier.width(10.dp))
-                    Text(when {
-                        computer != null -> "Connecté à $computer"
-                        linked.isNotEmpty() -> "MIDI connecté à ${linked.first().name}"
-                        else -> "En attente de ton ordinateur…"
-                    }, style = MaterialTheme.typography.titleMedium, color = Mmp.Ivory, modifier = Modifier.weight(1f))
+                    Column(Modifier.weight(1f)) {
+                        Text(if (computer != null) "Connecté à $computer" else "Aucun ordinateur connecté",
+                            style = MaterialTheme.typography.titleMedium, color = Mmp.Ivory)
+                        if (computer != null) Text(if (usb) "Par le câble USB" else "Par le Wi-Fi",
+                            style = MaterialTheme.typography.bodySmall, color = Mmp.Green)
+                    }
+                    if (computer != null && !usb) Chip("Déconnecter", selected = false, onClick = { midi.disconnect() })
                 }
-                if (computer == null && linked.isEmpty()) {
-                    Text("Ouvre Manu Play Cam Connect sur ton ordinateur, connecté au même Wi-Fi que ce téléphone : il le trouve tout seul.",
-                        style = MaterialTheme.typography.bodySmall, color = Mmp.Soft)
-                }
-                InfoLine("Ce téléphone", midi.phoneName)
-                InfoLine("Adresse Wi-Fi", WifiMidi.localAddresses().joinToString("  ·  ").ifBlank { "pas de Wi-Fi" })
+                Text("Ce téléphone s'appelle « ${midi.phoneName} » sur ton ordinateur.",
+                    style = MaterialTheme.typography.bodySmall, color = Mmp.Mute)
                 Spacer(Modifier.height(4.dp))
                 Text("SON DE L'ORDINATEUR", style = MaterialTheme.typography.labelSmall, color = Mmp.Green)
                 SignalMeter(level, Modifier.fillMaxWidth())
@@ -97,6 +93,32 @@ fun ComputerScreen(onBack: () -> Unit) {
                     level.clipping -> "Son reçu, mais il sature : baisse le volume de sortie du logiciel."
                     else -> "Son reçu · crête ${level.peakDb.roundToInt()} dB"
                 }, style = MaterialTheme.typography.bodySmall, color = if (level.clipping) Mmp.Red else Mmp.Soft)
+            }
+
+            // ---------------- ordinateurs trouvés sur le Wi-Fi
+            Eyebrow("Ordinateurs sur ton Wi-Fi")
+            MmpCard {
+                if (found.isEmpty()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        SearchingDot()
+                        Spacer(Modifier.width(10.dp))
+                        Text("Recherche…", style = MaterialTheme.typography.titleSmall, color = Mmp.Ivory)
+                    }
+                    Text("Ouvre Manu Play Cam Connect sur ton ordinateur. Il apparaîtra ici avec son nom, s'il est sur le même Wi-Fi que ce téléphone.",
+                        style = MaterialTheme.typography.bodySmall, color = Mmp.Mute)
+                }
+                found.forEach { c ->
+                    val on = computer == c.name && !usb
+                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        GlyphIcon("midi", if (on) Mmp.Green else Mmp.Soft)
+                        Spacer(Modifier.width(12.dp))
+                        Text(c.name, style = MaterialTheme.typography.titleSmall, color = if (on) Mmp.Green else Mmp.Ivory, modifier = Modifier.weight(1f))
+                        if (on) Chip("Connecté", selected = true, onClick = {})
+                        else Chip("Connecter", selected = false, enabled = !usb, onClick = { midi.connectTo(c) })
+                    }
+                }
+                if (usb && found.isNotEmpty()) Text("Le câble est branché : il est utilisé à la place du Wi-Fi.",
+                    style = MaterialTheme.typography.bodySmall, color = Mmp.Mute)
             }
 
             // ---------------- test MIDI
@@ -111,7 +133,7 @@ fun ComputerScreen(onBack: () -> Unit) {
             // ---------------- son de la vidéo
             Eyebrow("Son de la vidéo")
             MmpCard {
-                SourceChoice("Automatique (recommandé)", "Le son de ton logiciel s'il arrive par Manu Play Cam Connect, sinon le micro du téléphone", source == "auto") {
+                SourceChoice("Automatique (recommandé)", "Le son de ton logiciel s'il arrive de l'ordinateur, sinon le micro du téléphone", source == "auto") {
                     source = "auto"; prefs.audioSource = "auto"
                 }
                 SourceChoice("Toujours le micro du téléphone", "Le son de la pièce, même si l'ordinateur envoie du son", source == "mic") {
@@ -119,7 +141,7 @@ fun ComputerScreen(onBack: () -> Unit) {
                 }
             }
 
-            // ---------------- installation
+            // ---------------- installation de Connect
             Eyebrow("Installer Manu Play Cam Connect")
             MmpCard(onClick = { showGuide = !showGuide }) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -127,79 +149,57 @@ fun ComputerScreen(onBack: () -> Unit) {
                     Text(if (showGuide) "−" else "+", style = MaterialTheme.typography.titleLarge, color = Mmp.Green)
                 }
                 if (showGuide) {
-                    GuideStep("1", "Sur l'ordinateur, télécharge Manu Play Cam Connect (Mac ou Windows) depuis la page de téléchargement.")
+                    GuideStep("1", "Sur l'ordinateur, télécharge Manu Play Cam Connect (Mac ou Windows).")
                     GuideStep("2", "Mac : ouvre le fichier, glisse l'application dans Applications, puis fais un clic droit › Ouvrir la première fois. Autorise « Réseau local » et « Enregistrement de l'écran et audio système » (c'est ce qui permet de capter le son de Logic).")
-                    GuideStep("3", "Windows : lance ManuPlayCam-Connect.exe. Si Windows affiche un avertissement, clique sur « Informations complémentaires › Exécuter quand même », puis autorise l'accès au réseau privé.")
-                    GuideStep("4", "Mets l'ordinateur et ce téléphone sur le même Wi-Fi, ouvre Connect : le téléphone apparaît, la liaison se fait toute seule.")
+                    GuideStep("3", "Windows : lance l'installateur. Si Windows affiche un avertissement, clique sur « Informations complémentaires › Exécuter quand même », puis autorise l'accès au réseau privé.")
+                    GuideStep("4", "Ouvre Connect : ton ordinateur apparaît ici par son nom, et ce téléphone apparaît dans Connect. Touche « Connecter » d'un côté ou de l'autre. La fois suivante, ils se retrouvent tout seuls.")
                     GuideStep("5", "Ton clavier relié à l'ordinateur est capté directement. Depuis Logic, Ableton ou MainStage, tu peux aussi envoyer le MIDI d'une piste vers le port « Manu Play Cam ».")
                     PillButton("Ouvrir la page de téléchargement", onClick = {
                         runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(CONNECT_DOWNLOAD_URL)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
                     }, primary = false, modifier = Modifier.fillMaxWidth())
-                    Text(CONNECT_DOWNLOAD_URL, style = MaterialTheme.typography.bodySmall, color = Mmp.Mute)
                 }
             }
 
-            // ---------------- option : MIDI seul par la session réseau
-            MmpCard(onClick = { showSession = !showSession }) {
+            // ---------------- câble USB
+            Eyebrow("Sans Wi-Fi : par câble USB")
+            MmpCard(onClick = { showCable = !showCable }, highlight = usb) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("Option : MIDI seul, sans Connect", style = MaterialTheme.typography.titleSmall, color = Mmp.Ivory)
-                        Text("Par la session MIDI réseau du Mac ou rtpMIDI (Windows). Pas de son.", style = MaterialTheme.typography.bodySmall, color = Mmp.Mute)
-                    }
-                    Text(if (showSession) "−" else "+", style = MaterialTheme.typography.titleLarge, color = Mmp.Green)
-                }
-            }
-            if (showSession) {
-                MmpCard {
-                    SettingSwitch("Session MIDI réseau", "Le téléphone est visible sous le nom « ${midi.wifi.phoneName} »", sessionOn) {
-                        sessionOn = it; midi.setSessionMidiEnabled(it)
-                    }
-                    if (sessionOn) {
-                        linked.forEach { l ->
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                StatusDot(true)
-                                Spacer(Modifier.width(8.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text(l.name, style = MaterialTheme.typography.titleSmall, color = Mmp.Ivory)
-                                    Text(l.host + if (l.latencyMs >= 0) " · latence ${"%.1f".format(l.latencyMs)} ms" else "", style = MaterialTheme.typography.bodySmall, color = Mmp.Mute)
-                                }
-                                Chip("Déconnecter", selected = false, onClick = { midi.wifi.disconnect(l.ssrc) })
-                            }
-                        }
-                        Text(if (searching) "Ordinateurs trouvés sur le Wi-Fi" else "Recherche arrêtée",
-                            style = MaterialTheme.typography.labelMedium, color = Mmp.Green)
-                        if (found.isEmpty()) Text("Aucun pour l'instant. Sur Mac : Configuration audio et MIDI › Fenêtre › Afficher le studio MIDI › Réseau, crée une session (+), coche-la et choisis « Tout le monde ».",
+                        Text(if (usb) "Câble branché et relié" else "Relier avec un câble", style = MaterialTheme.typography.titleSmall, color = if (usb) Mmp.Green else Mmp.Ivory)
+                        Text("Le son et le MIDI passent par le câble. Il passe avant le Wi-Fi quand il est branché.",
                             style = MaterialTheme.typography.bodySmall, color = Mmp.Mute)
-                        found.forEach { c ->
-                            val isLinked = linked.any { it.host == c.host }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(c.name, style = MaterialTheme.typography.titleSmall, color = Mmp.Ivory)
-                                    Text("${c.host} · port ${c.port}", style = MaterialTheme.typography.bodySmall, color = Mmp.Mute)
-                                }
-                                Chip(when { isLinked -> "Connecté"; connecting == c.host -> "Connexion…"; else -> "Connecter" },
-                                    selected = !isLinked, enabled = !isLinked && connecting == null, onClick = { midi.wifi.connect(c) })
-                            }
-                        }
-                        PillButton("Rechercher à nouveau", onClick = { midi.wifi.searchAgain() }, primary = false, modifier = Modifier.fillMaxWidth())
-                        OutlinedTextField(value = manualIp, onValueChange = { manualIp = it }, singleLine = true,
-                            label = { Text("Adresse de l'ordinateur (ex. 192.168.1.20)") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Mmp.Green, unfocusedBorderColor = Mmp.Ebony3,
-                                focusedTextColor = Mmp.Ivory, unfocusedTextColor = Mmp.Ivory, focusedLabelColor = Mmp.Green, unfocusedLabelColor = Mmp.Mute),
-                            modifier = Modifier.fillMaxWidth())
-                        PillButton("Se connecter à cette adresse", enabled = manualIp.isNotBlank(), onClick = {
-                            val parts = manualIp.trim().split(":")
-                            midi.wifi.connectManual(parts[0], parts.getOrNull(1)?.toIntOrNull() ?: 5004)
-                        }, modifier = Modifier.fillMaxWidth())
                     }
+                    Text(if (showCable) "−" else "+", style = MaterialTheme.typography.titleLarge, color = Mmp.Green)
+                }
+                if (showCable) {
+                    Text("À faire une seule fois :", style = MaterialTheme.typography.labelMedium, color = Mmp.Green)
+                    GuideStep("1", "Paramètres du téléphone › À propos du téléphone : touche 7 fois « Numéro de build » (sur Samsung : Informations sur le logiciel › Numéro de version). Le message « Vous êtes développeur » apparaît.")
+                    GuideStep("2", "Paramètres › Options pour les développeurs : active « Débogage USB ».")
+                    PillButton("Ouvrir les options pour les développeurs", onClick = {
+                        val ok = runCatching { ctx.startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isSuccess
+                        if (!ok) runCatching { ctx.startActivity(Intent(Settings.ACTION_DEVICE_INFO_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                    }, primary = false, modifier = Modifier.fillMaxWidth())
+                    Text("Ensuite, à chaque fois :", style = MaterialTheme.typography.labelMedium, color = Mmp.Green)
+                    GuideStep("3", "Ouvre Manu Play Cam Connect sur l'ordinateur et branche le câble USB.")
+                    GuideStep("4", "La première fois, le téléphone demande « Autoriser le débogage USB ? » : coche « Toujours autoriser » et touche Autoriser.")
+                    GuideStep("5", "C'est relié : « Par le câble USB » s'affiche en haut de cet écran.")
+                    Text("Windows : si le téléphone n'est pas reconnu, installe le pilote USB de sa marque (Samsung, Xiaomi…), puis rebranche.",
+                        style = MaterialTheme.typography.bodySmall, color = Mmp.Mute)
                 }
             }
-            Text("Si rien n'apparaît : vérifie que les deux appareils sont sur le même Wi-Fi (pas un Wi-Fi « invité », qui isole les appareils) et que le pare-feu de l'ordinateur autorise Manu Play Cam Connect.",
+
+            Text("Wi-Fi : si l'ordinateur n'apparaît pas, vérifie que les deux appareils sont sur le même Wi-Fi (pas un Wi-Fi « invité », qui isole les appareils) et que l'ordinateur autorise Manu Play Cam Connect sur le réseau. Sinon, utilise le câble.",
                 style = MaterialTheme.typography.bodySmall, color = Mmp.Mute)
             Spacer(Modifier.height(20.dp))
         }
     }
+}
+
+@Composable
+private fun SearchingDot() {
+    val t = rememberInfiniteTransition(label = "search")
+    val a by t.animateFloat(0.25f, 1f, infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "a")
+    Box(Modifier.size(10.dp).background(Mmp.Green.copy(alpha = a), CircleShape))
 }
 
 @Composable
@@ -221,4 +221,3 @@ private fun SourceChoice(title: String, subtitle: String, selected: Boolean, onC
         }
     }
 }
-

@@ -32,11 +32,11 @@ import com.manumusicprod.playcam.Screen
 fun HomeScreen(go: (Screen) -> Unit) {
     val app = PlayCamApp.instance
     val computer by app.midi.computer.collectAsState()
-    val linked by app.midi.wifi.linked.collectAsState()
+    val usb by app.midi.usb.collectAsState()
     val level by app.midi.audioLevel.collectAsState()
     val sessions by app.store.sessions.collectAsState()
     LaunchedEffect(Unit) { app.store.reload() }
-    val linkName = computer ?: linked.firstOrNull()?.name
+    val linkName = computer
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 16.dp),
@@ -53,7 +53,7 @@ fun HomeScreen(go: (Screen) -> Unit) {
             append("MANU\n")
             withStyle(SpanStyle(color = Mmp.Green)) { append("PLAY CAM") }
         }, style = MaterialTheme.typography.displaySmall, color = Mmp.Ivory)
-        Text("Relie ton ordinateur en Wi-Fi, filme ton jeu : les notes, les accords et le son de ton logiciel entrent dans la vidéo, au même tempo que l'image.",
+        Text("Relie ton ordinateur en Wi-Fi ou par câble, filme ton jeu : les notes, les accords et le son de ton logiciel entrent dans la vidéo, au même tempo que l'image.",
             style = MaterialTheme.typography.bodyMedium, color = Mmp.Soft)
 
         // aperçu vivant du clavier
@@ -61,11 +61,11 @@ fun HomeScreen(go: (Screen) -> Unit) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 StatusDot(linkName != null)
                 Spacer(Modifier.width(8.dp))
-                Text(if (linkName == null) "Aucun ordinateur connecté" else "Connecté à $linkName",
+                Text(if (linkName == null) "Aucun ordinateur connecté" else "Connecté à $linkName" + (if (usb) " · câble" else " · Wi-Fi"),
                     style = MaterialTheme.typography.titleSmall, color = Mmp.Ivory, modifier = Modifier.weight(1f))
             }
             Box(Modifier.fillMaxWidth().aspectRatio(3.2f)) { KeyboardPreview(Modifier.fillMaxSize()) }
-            if (linkName == null) Text("Ouvre Manu Play Cam Connect sur ton ordinateur, sur le même Wi-Fi : ce que tu joues s'allumera ici.",
+            if (linkName == null) Text("Ouvre Manu Play Cam Connect sur ton ordinateur (même Wi-Fi, ou câble USB) : ce que tu joues s'allumera ici.",
                 style = MaterialTheme.typography.bodySmall, color = Mmp.Mute)
             if (computer != null) SignalMeter(level, Modifier.fillMaxWidth())
         }
@@ -77,7 +77,7 @@ fun HomeScreen(go: (Screen) -> Unit) {
                 GlyphIcon("midi", Mmp.Green)
                 Text("Ordinateur", style = MaterialTheme.typography.titleMedium, color = Mmp.Ivory)
                 Text(when {
-                    linkName == null -> "Connexion Wi-Fi"
+                    linkName == null -> "Wi-Fi ou câble"
                     level.active -> "MIDI + son reçus"
                     else -> "MIDI reçu"
                 }, style = MaterialTheme.typography.bodySmall, color = Mmp.Mute, maxLines = 2)

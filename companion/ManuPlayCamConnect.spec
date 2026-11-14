@@ -1,5 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 # Construction de Manu Play Cam Connect (Mac : .app, Windows : dossier + .exe) avec PyInstaller.
+import glob
+import os
 import sys
 from PyInstaller.utils.hooks import collect_data_files
 
@@ -9,7 +11,10 @@ if sys.platform == "darwin":
     hidden += ["ScreenCaptureKit", "CoreMedia", "objc", "Foundation"]
 icon = "assets/icon.icns" if sys.platform == "darwin" else "assets/icon.ico"
 
-a = Analysis(["mmp_connect.py"], pathex=[], binaries=[], datas=datas, hiddenimports=hidden,
+# câble USB : adb (Android platform-tools) livré dans le dossier adb/ de l'application
+adb_bins = [(f, "adb") for f in glob.glob("adb/*") if os.path.isfile(f)]
+
+a = Analysis(["mmp_connect.py"], pathex=[], binaries=adb_bins, datas=datas, hiddenimports=hidden,
              hookspath=[], runtime_hooks=[], excludes=["matplotlib", "scipy", "pandas"], noarchive=False)
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="Manu Play Cam Connect", debug=False,
@@ -21,9 +26,9 @@ if sys.platform == "darwin":
                  info_plist={
                      "CFBundleName": "Manu Play Cam Connect",
                      "CFBundleDisplayName": "Manu Play Cam Connect",
-                     "CFBundleShortVersionString": "1.0.2",
-                     "CFBundleVersion": "3",
-                     "LSMinimumSystemVersion": "13.0",
+                     "CFBundleShortVersionString": "1.1.0",
+                     "CFBundleVersion": "4",
+                     "LSMinimumSystemVersion": "10.15",
                      "NSHighResolutionCapable": True,
                      "NSMicrophoneUsageDescription": "Manu Play Cam Connect capte le son d'une entrée audio pour l'envoyer à ton téléphone.",
                      "NSLocalNetworkUsageDescription": "Manu Play Cam Connect envoie le son et le MIDI à ton téléphone sur le Wi-Fi.",
