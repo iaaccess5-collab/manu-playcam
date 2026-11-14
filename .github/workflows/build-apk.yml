@@ -90,7 +90,7 @@ jobs:
           BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
           "$BT/apksigner" verify --print-certs "$APK"
           "$BT/aapt" dump badging "$APK" | head -3
-          mkdir -p out && cp "$APK" "out/ManuPlayCam-Android-v1.2.0.apk"
+          mkdir -p out && cp "$APK" "out/ManuPlayCam-Android-v1.2.1.apk"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -310,12 +310,12 @@ jobs:
       - run: find art -type f | sort
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.2.0-build${{ github.run_number }}
-          name: Manu Play Cam 1.2 — build ${{ github.run_number }}
+          tag_name: v1.2.1-build${{ github.run_number }}
+          name: Manu Play Cam 1.2.1 — build ${{ github.run_number }}
           body: |
             **Manu Play Cam** — MANU MUSIC PROD
 
-            • **Téléphone Android** : `ManuPlayCam-Android-v1.2.0.apk` — télécharge-le sur le téléphone et ouvre-le pour l'installer.
+            • **Téléphone Android** : `ManuPlayCam-Android-v1.2.1.apk` — télécharge-le sur le téléphone et ouvre-le pour l'installer.
             • **Mac** : `ManuPlayCam-Connect-Mac-AppleSilicon.dmg` (Mac M1, M2, M3, M4…) ou `ManuPlayCam-Connect-Mac-Intel.dmg` (Mac Intel).
             • **Windows** : `ManuPlayCam-Connect-Windows-Setup.exe`.
 
