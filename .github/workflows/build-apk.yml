@@ -1,4 +1,4 @@
-name: Compiler l'APK Manu Play Cam
+name: Compiler Manu Play Cam (APK + Connect Mac + Connect Windows)
 
 on:
   push:
@@ -9,16 +9,19 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  # ------------------------------------------------------------------ application Android
+  android:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       # Dépôt alimenté depuis le navigateur : si une archive source.zip est présente,
-      # on la décompresse dans le dépôt et on enregistre les fichiers (une seule fois).
+      # on la décompresse dans le dépôt et on enregistre les fichiers.
       - name: Importer source.zip (si présent)
         run: |
           if [ -f source.zip ]; then
+            # l'archive remplace tout le code : les fichiers supprimés disparaissent aussi du dépôt
+            git ls-files | grep -v -e '^source.zip$' -e '^\.github/' | xargs -r -d '\n' git rm -q
             unzip -o -q source.zip -d .
             git rm -q --cached source.zip || true
             rm -f source.zip
@@ -38,11 +41,23 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Tests du cœur musical (accords, MIDI, WAV)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Tests (accords, MIDI, Wi-Fi, son de l'ordinateur)
         run: |
+          pip install numpy==2.1.3
           mkdir -p /tmp/jt
-          javac -encoding UTF-8 -d /tmp/jt app/src/main/java/com/manumusicprod/playcam/core/*.java app/src/test/java/com/manumusicprod/playcam/core/CoreTest.java
-          java -cp /tmp/jt com.manumusicprod.playcam.core.CoreTest /tmp/jt/t.mid /tmp/jt/t.wav
+          javac -encoding UTF-8 -d /tmp/jt app/src/main/java/com/manumusicprod/playcam/core/*.java app/src/test/java/com/manumusicprod/playcam/core/*.java
+          java -Dstdout.encoding=UTF-8 -cp /tmp/jt com.manumusicprod.playcam.core.CoreTest /tmp/jt/t.mid /tmp/jt/t.wav
+          java -Dstdout.encoding=UTF-8 -cp /tmp/jt com.manumusicprod.playcam.core.AppleMidiTest
+          (java -Dstdout.encoding=UTF-8 -cp /tmp/jt com.manumusicprod.playcam.core.ConnectTest /tmp/jt/c.wav > /tmp/jt/connect.log 2>&1; echo $? > /tmp/jt/connect.rc) &
+          sleep 2
+          python3 companion/mmp_connect.py --console --tone --phone 127.0.0.1 --seconds 7
+          sleep 2
+          cat /tmp/jt/connect.log
+          test "$(cat /tmp/jt/connect.rc)" = "0"
 
       - name: Compiler l'APK
         run: gradle :app:assembleRelease --no-daemon --stacktrace
@@ -50,25 +65,122 @@ jobs:
       - name: Vérifier l'APK
         run: |
           APK=app/build/outputs/apk/release/app-release.apk
-          ls -la "$APK"
           BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
           "$BT/apksigner" verify --print-certs "$APK"
-          "$BT/aapt" dump badging "$APK" | head -5
-          mkdir -p out
-          cp "$APK" "out/ManuPlayCam-v1.0.0-build${{ github.run_number }}.apk"
+          "$BT/aapt" dump badging "$APK" | head -3
+          mkdir -p out && cp "$APK" "out/ManuPlayCam-Android-v1.1.0.apk"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ManuPlayCam-apk
+          name: android
           path: out/*.apk
 
-      - name: Publier le lien de téléchargement
-        uses: softprops/action-gh-release@v2
+  # ------------------------------------------------------------------ Connect pour Windows (installateur .exe)
+  connect-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Importer source.zip (si présent)
+        shell: bash
+        run: if [ -f source.zip ]; then unzip -o -q source.zip -d .; fi
+      - uses: actions/setup-python@v5
         with:
-          tag_name: build-${{ github.run_number }}
-          name: Manu Play Cam — build ${{ github.run_number }}
+          python-version: '3.12'
+      - name: Dépendances
+        working-directory: companion
+        run: pip install -r requirements-win.txt
+      - name: Autotest
+        working-directory: companion
+        run: python mmp_connect.py --selftest
+      - name: Construire l'application
+        working-directory: companion
+        run: pyinstaller --noconfirm ManuPlayCamConnect.spec
+      - name: Capture de la fenêtre (contrôle du design)
+        working-directory: companion
+        continue-on-error: true
+        run: python mmp_connect.py --screenshot connect-windows.png
+      - name: Installateur (Inno Setup)
+        working-directory: companion
+        shell: pwsh
+        run: |
+          $iscc = Get-Command iscc -ErrorAction SilentlyContinue
+          if (-not $iscc) { choco install innosetup -y --no-progress | Out-Null }
+          $path = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $path) { $path = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" }
+          & $path installer.iss
+          Copy-Item "dist-installer\ManuPlayCam-Connect-Windows-Setup.exe" "..\ManuPlayCam-Connect-Windows-Setup.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: connect-windows
+          path: |
+            ManuPlayCam-Connect-Windows-Setup.exe
+            companion/connect-windows.png
+
+  # ------------------------------------------------------------------ Connect pour Mac (.dmg) : Apple Silicon et Intel
+  connect-mac:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            arch: AppleSilicon
+          - runner: macos-15-intel
+            arch: Intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Importer source.zip (si présent)
+        run: if [ -f source.zip ]; then unzip -o -q source.zip -d .; fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Dépendances
+        working-directory: companion
+        run: pip install -r requirements-mac.txt
+      - name: Autotest
+        working-directory: companion
+        run: python mmp_connect.py --selftest
+      - name: Construire l'application
+        working-directory: companion
+        run: pyinstaller --noconfirm ManuPlayCamConnect.spec
+      - name: Créer le .dmg
+        working-directory: companion
+        run: |
+          mkdir -p dmgroot
+          cp -R "dist/Manu Play Cam Connect.app" dmgroot/
+          ln -s /Applications dmgroot/Applications
+          codesign --force --deep -s - "dmgroot/Manu Play Cam Connect.app" || true
+          hdiutil create -volname "Manu Play Cam Connect" -srcfolder dmgroot -ov -format UDZO "../ManuPlayCam-Connect-Mac-${{ matrix.arch }}.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: connect-mac-${{ matrix.arch }}
+          path: ManuPlayCam-Connect-Mac-*.dmg
+
+  # ------------------------------------------------------------------ page de téléchargement
+  release:
+    needs: [ android, connect-windows, connect-mac ]
+    if: always() && needs.android.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: art
+      - run: find art -type f | sort
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.1.0-build${{ github.run_number }}
+          name: Manu Play Cam 1.1 — build ${{ github.run_number }}
           body: |
-            APK Android de Manu Play Cam (MANU MUSIC PROD), compilé automatiquement.
-            Télécharge le fichier .apk ci-dessous sur ton téléphone Android, puis ouvre-le pour l'installer.
-          files: out/*.apk
+            **Manu Play Cam** — MANU MUSIC PROD
+
+            • **Téléphone Android** : `ManuPlayCam-Android-v1.1.0.apk` — télécharge-le sur le téléphone et ouvre-le pour l'installer.
+            • **Mac** : `ManuPlayCam-Connect-Mac-AppleSilicon.dmg` (Mac M1, M2, M3, M4…) ou `ManuPlayCam-Connect-Mac-Intel.dmg` (Mac Intel).
+            • **Windows** : `ManuPlayCam-Connect-Windows-Setup.exe`.
+
+            Mets l'ordinateur et le téléphone sur le même Wi-Fi, ouvre Manu Play Cam Connect : le téléphone est trouvé tout seul,
+            le MIDI et le son de ton logiciel de musique arrivent dans l'application.
+          files: |
+            art/android/*.apk
+            art/connect-windows/*.exe
+            art/connect-mac-*/*.dmg
           make_latest: true
